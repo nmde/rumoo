@@ -1,33 +1,43 @@
-from os.path import dirname, realpath
+use std::{collections::HashMap, env::current_exe, path::PathBuf};
 
-from pymoo.version import __version__
+use anyhow::Result;
 
+/// The configuration of this package in general providing the place
+/// for declaring global variables.
+struct Config {
+    // the root directory where the package is located at
+    warnings: HashMap<String, bool>,
+    // whether a warning should be printed if compiled modules are not available
+    show_compile_hint: bool,
+    // whether when import a file the doc should be parsed - only activate when creating doc files
+    parse_custom_docs: bool,
+}
 
-class Config:
-    """
-    The configuration of this package in general providing the place
-    for declaring global variables.
-    """
-
-    # the root directory where the package is located at
-    root = dirname(realpath(__file__))
-
-    warnings = {
-        "not_compiled": True
+impl Config {
+    pub fn new() -> Self {
+        Self {
+            warnings: HashMap::from([("not_compiled".to_string(), true)]),
+            show_compile_hint: true,
+            parse_custom_docs: false,
+        }
     }
 
-    # whether a warning should be printed if compiled modules are not available
-    show_compile_hint = True
+    /// a method defining the endpoint to load data remotely - default from GitHub repo
+    pub fn data(&self) -> &str {
+        "https://raw.githubusercontent.com/anyoptimization/pymoo-data/main/"
+    }
 
-    # whether when import a file the doc should be parsed - only activate when creating doc files
-    parse_custom_docs = False
+    pub fn root() -> Result<Option<PathBuf>> {
+        let curr = current_exe()?;
+        let dirname = curr.parent();
+        if dirname.is_some() {
+            return Ok(Some(dirname.unwrap().to_path_buf()));
+        }
+        return Ok(None);
+    }
+}
 
-    # a method defining the endpoint to load data remotely - default from GitHub repo
-    @classmethod
-    def data(cls):
-        return f"https://raw.githubusercontent.com/anyoptimization/pymoo-data/main/"
-
-
-# returns the directory to be used for imports
-def get_pymoo():
-    return dirname(Config.root)
+// returns the directory to be used for imports
+pub fn get_rumoo() -> Result<Option<PathBuf>> {
+    Ok(Config::root()?)
+}

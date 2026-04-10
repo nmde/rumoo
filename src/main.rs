@@ -1,3 +1,6 @@
-from pymoo.version import __version__
+pub mod config;
+pub mod version;
 
+pub fn main() {
 
+}
