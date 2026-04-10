@@ -1,3 +1,3 @@
-fn main() {
-    println!("Hello, world!");
-}
+from pymoo.version import __version__
+
+
