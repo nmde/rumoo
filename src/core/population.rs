@@ -1,180 +1,331 @@
-import numpy as np
+use std::ops::{Index, IndexMut};
 
-from pymoo.core.individual import Individual
+use ndarray::{Array1, Array2};
 
+#[derive(Clone, Debug)]
+pub enum Value {
+    Float(f64),
+    Int(i64),
+    Bool(bool),
+    FloatArray(Array1<f64>),
+    IntArray(Array1<i64>),
+    BoolArray(Array1<bool>),
+    FloatMatrix(Array2<f64>),
+}
 
-class Population(np.ndarray):
+/// A collection of `Individual`s.
+/// Mirrors `pymoo.core.population.Population` (a numpy array of individuals).
+pub struct Population {
+    individuals: Vec<Individual>,
+}
 
-    def __new__(cls, individuals=[]):
-        if isinstance(individuals, Individual):
-            individuals = [individuals]
-        return np.array(individuals).view(cls)
+impl Population {
+    pub fn new(individuals: Vec<Individual>) -> Self {
+        Self { individuals }
+    }
 
-    def has(self, key):
-        return all([ind.has(key) for ind in self])
+    /// True if all individuals have the given key.
+    pub fn has(&self, key: &str) -> bool {
+        self.individuals.iter().all(|ind| ind.has(key))
+    }
 
-    def collect(self, func, to_numpy=True):
-        val = []
-        for i in range(len(self)):
-            val.append(func(self[i]))
-        if to_numpy:
-            val = np.array(val)
-        return val
+    /// Map a function over individuals, collecting results.
+    pub fn collect<T, F: Fn(&Individual) -> T>(&self, func: F) -> Vec<T> {
+        self.individuals.iter().map(func).collect()
+    }
 
-    def apply(self, func):
-        self.collect(func, to_numpy=False)
+    pub fn apply<F: Fn(&Individual)>(&self, func: F) {
+        self.individuals.iter().for_each(func);
+    }
 
-    def set(self, *args, **kwargs):
+    /// Set a scalar attribute on every individual in the population.
+    /// Mirrors `pop.set("rank", k)` where k is a scalar.
+    pub fn set(&mut self, key: &str, value: Value) {
+        for ind in &mut self.individuals {
+            ind.set(key, value.clone());
+        }
+    }
 
-        # if population is empty just return
-        if self.size == 0:
-            return
+    /// Set a per-individual attribute from a `Vec<Value>` whose length equals the population size.
+    /// Mirrors `pop.set("crowding", crowding_array)`.
+    pub fn set_each(&mut self, key: &str, values: Vec<Value>) {
+        assert_eq!(
+            values.len(),
+            self.individuals.len(),
+            "Population::set_each: values length must match population size"
+        );
+        for (ind, val) in self.individuals.iter_mut().zip(values) {
+            ind.set(key, val);
+        }
+    }
 
-        # done for the old interface with the interleaving variable definition
-        kwargs = interleaving_args(*args, kwargs=kwargs)
+    /// Collect a named attribute from all individuals and stack into an array.
+    /// Mirrors `pop.get("F")` → `Array2<f64>`, `pop.get("CV")` → `Array1<f64>`, etc.
+    pub fn get(&self, key: &str) -> Value {
+        if self.individuals.is_empty() {
+            return Value::FloatMatrix(Array2::zeros((0, 0)));
+        }
+        match key {
+            "F" => {
+                let n = self.individuals.len();
+                let m = self.individuals[0].f.len();
+                let mut out = Array2::zeros((n, m));
+                for (i, ind) in self.individuals.iter().enumerate() {
+                    out.row_mut(i).assign(&ind.f);
+                }
+                Value::FloatMatrix(out)
+            }
+            "G" => {
+                let n = self.individuals.len();
+                let m = self.individuals[0].g.len();
+                let mut out = Array2::zeros((n, m));
+                for (i, ind) in self.individuals.iter().enumerate() {
+                    out.row_mut(i).assign(&ind.g);
+                }
+                Value::FloatMatrix(out)
+            }
+            "H" => {
+                let n = self.individuals.len();
+                let m = self.individuals[0].h.len();
+                let mut out = Array2::zeros((n, m));
+                for (i, ind) in self.individuals.iter().enumerate() {
+                    out.row_mut(i).assign(&ind.h);
+                }
+                Value::FloatMatrix(out)
+            }
+            "X" => {
+                let n = self.individuals.len();
+                let m = self.individuals[0].x.len();
+                let mut out = Array2::zeros((n, m));
+                for (i, ind) in self.individuals.iter().enumerate() {
+                    out.row_mut(i).assign(&ind.x);
+                }
+                Value::FloatMatrix(out)
+            }
+            "CV" => {
+                let cv: Vec<f64> = self.individuals.iter()
+                    .map(|ind| ind.cv()[0])
+                    .collect();
+                Value::FloatArray(Array1::from_vec(cv))
+            }
+            "FEAS" => {
+                let feas: Vec<bool> = self.individuals.iter()
+                    .map(|ind| ind.feas()[0])
+                    .collect();
+                Value::BoolArray(Array1::from_vec(feas))
+            }
+            _ => {
+                // Generic: collect scalar values from the data store.
+                // Try float first, then int.
+                let raw: Vec<Option<Value>> = self.individuals.iter()
+                    .map(|ind| ind.data.get(key).cloned())
+                    .collect();
 
-        # for each entry in the dictionary set it to each individual
-        for key, values in kwargs.items():
-            is_iterable = hasattr(values, '__len__') and not isinstance(values, str)
+                let as_floats: Option<Vec<f64>> = raw.iter().map(|v| match v {
+                    Some(Value::Float(f)) => Some(*f),
+                    Some(Value::Int(i)) => Some(*i as f64),
+                    _ => None,
+                }).collect();
 
-            if is_iterable and len(values) != len(self):
-                raise Exception("Population Set Attribute Error: Number of values and population size do not match!")
+                if let Some(fs) = as_floats {
+                    return Value::FloatArray(Array1::from_vec(fs));
+                }
 
-            for i in range(len(self)):
-                val = values[i] if is_iterable else values
+                let as_ints: Option<Vec<i64>> = raw.iter().map(|v| match v {
+                    Some(Value::Int(i)) => Some(*i),
+                    _ => None,
+                }).collect();
 
-                # check for view and make copy to prevent memory leakage (#455)
-                if isinstance(val, np.ndarray) and not val.flags["OWNDATA"]:
-                    val = val.copy()
+                if let Some(is) = as_ints {
+                    return Value::IntArray(Array1::from_vec(is));
+                }
 
-                self[i].set(key, val)
+                Value::FloatArray(Array1::zeros(self.individuals.len()))
+            }
+        }
+    }
 
-        return self
+    /// Collect multiple named attributes in one call.
+    /// Mirrors Python's `pop.get("G", "H")` returning a tuple.
+    pub fn get_many(&self, keys: &[&str]) -> Vec<Value> {
+        keys.iter().map(|k| self.get(k)).collect()
+    }
 
-    def get(self, *args, to_numpy=True, **kwargs):
+    pub fn merge(a: Population, b: Population) -> Population {
+        merge(a, b)
+    }
 
-        val = {}
-        for c in args:
-            val[c] = []
+    pub fn empty(size: usize) -> Self {
+        Self {
+            individuals: (0..size).map(|_| Individual::new()).collect(),
+        }
+    }
 
-        # for each individual
-        for i in range(len(self)):
+    /// Mirrors `Population.new("X", x_matrix, ...)`.
+    /// Accepts interleaved `(key, Value)` pairs; matrix values are split per-row.
+    pub fn new_with_attrs(attrs: &[(&str, Value)]) -> Self {
+        if attrs.is_empty() {
+            return Self::empty(0);
+        }
+        let size = match &attrs[0].1 {
+            Value::FloatMatrix(m) => m.nrows(),
+            Value::FloatArray(a) => a.len(),
+            Value::IntArray(a) => a.len(),
+            Value::BoolArray(a) => a.len(),
+            _ => 1,
+        };
+        let mut pop = Self::empty(size);
+        for (key, value) in attrs {
+            match value {
+                Value::FloatMatrix(m) => {
+                    for (i, ind) in pop.individuals.iter_mut().enumerate() {
+                        ind.set(key, Value::FloatArray(m.row(i).to_owned()));
+                    }
+                }
+                other => pop.set(key, other.clone()),
+            }
+        }
+        pop
+    }
 
-            # for each argument
-            for c in args:
-                val[c].append(self[i].get(c, **kwargs))
+    pub fn len(&self) -> usize {
+        self.individuals.len()
+    }
 
-        # convert the results to a list
-        res = [val[c] for c in args]
+    pub fn is_empty(&self) -> bool {
+        self.individuals.is_empty()
+    }
 
-        # to numpy array if desired - default true
-        if to_numpy:
-            res = [np.array(e) for e in res]
+    pub fn iter(&self) -> std::slice::Iter<Individual> {
+        self.individuals.iter()
+    }
 
-        # return as tuple or single value
-        if len(args) == 1:
-            return res[0]
-        else:
-            return tuple(res)
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<Individual> {
+        self.individuals.iter_mut()
+    }
 
-    @classmethod
-    def merge(cls, a, b, *args):
+    /// Fancy-index into the population: `pop.select(&[0, 2, 5])`.
+    /// Mirrors `pop[[0, 2, 5]]` in numpy.
+    pub fn select(&self, indices: &[usize]) -> Self {
+        Self {
+            individuals: indices.iter()
+                .map(|&i| self.individuals[i].clone())
+                .collect(),
+        }
+    }
 
-        # do the regular merge between first and second element
-        m = merge(a, b)
+    /// Boolean-mask selection.
+    /// Mirrors `pop[mask]` in numpy.
+    pub fn select_where(&self, mask: &Array1<bool>) -> Self {
+        assert_eq!(mask.len(), self.individuals.len());
+        Self {
+            individuals: self.individuals.iter()
+                .zip(mask.iter())
+                .filter_map(|(ind, &keep)| if keep { Some(ind.clone()) } else { None })
+                .collect(),
+        }
+    }
+}
 
-        # process the list of others and merge as well
-        others = list(args)
-        while len(others) > 0:
-            m = merge(m, others.pop(0))
+impl Index<usize> for Population {
+    type Output = Individual;
+    fn index(&self, i: usize) -> &Individual {
+        &self.individuals[i]
+    }
+}
 
-        return m
+impl IndexMut<usize> for Population {
+    fn index_mut(&mut self, i: usize) -> &mut Individual {
+        &mut self.individuals[i]
+    }
+}
 
-    @classmethod
-    def create(cls, *args):
-        return Population.__new__(cls, args)
+pub enum PopulationInput {
+    Pop(Population),
+    Matrix(Array2<f64>),
+    Individual(Individual),
+}
 
-    @classmethod
-    def empty(cls, size=0):
-        individuals = [Individual() for _ in range(size)]
-        return Population.__new__(cls, individuals)
+/// Convert an array or individual to a `Population`.
+/// Mirrors `pymoo.core.population.pop_from_array_or_individual`.
+pub fn pop_from_array_or_individual(
+    input: PopulationInput,
+    base: Option<Population>,
+) -> Option<Population> {
+    let base = base.unwrap_or_else(|| Population::empty(0));
+    match input {
+        PopulationInput::Pop(p) => Some(p),
+        PopulationInput::Matrix(m) => {
+            Some(base.new_with_attrs(&[("X", Value::FloatMatrix(m))]))
+        }
+        PopulationInput::Individual(ind) => {
+            let mut pop = Population::empty(1);
+            pop[0] = ind;
+            Some(pop)
+        }
+    }
+}
 
-    @classmethod
-    def new(cls, *args, **kwargs):
-        kwargs = interleaving_args(*args, kwargs=kwargs)
+/// Concatenate two populations.
+/// Mirrors `pymoo.core.population.merge`.
+pub fn merge(a: Population, b: Population) -> Population {
+    if a.is_empty() {
+        return b;
+    }
+    if b.is_empty() {
+        return a;
+    }
+    let mut individuals = a.individuals;
+    individuals.extend(b.individuals);
+    Population { individuals }
+}
 
-        if len(kwargs) > 0:
-            sizes = np.unique(np.array([len(v) for _, v in kwargs.items()]))
-            if len(sizes) == 1:
-                size = sizes[0]
-            else:
-                raise Exception(f"Population.new needs to be called with same-sized inputs, but the sizes are {sizes}")
-        else:
-            size = 0
+pub struct CvConstraintConfig {
+    pub scale: Option<f64>,
+    pub eps: f64,
+    pub pow: Option<f64>,
+}
 
-        pop = Population.empty(size)
-        pop.set(**kwargs)
+pub struct CvConfig {
+    pub cache: bool,
+    pub cv_eps: f64,
+    pub cv_ieq: CvConstraintConfig,
+    pub cv_eq: CvConstraintConfig,
+}
 
-        return pop
+impl Default for CvConfig {
+    fn default() -> Self {
+        Self {
+            cache: true,
+            cv_eps: 0.0,
+            cv_ieq: CvConstraintConfig { scale: None, eps: 0.0, pow: None },
+            cv_eq: CvConstraintConfig { scale: None, eps: 1e-4, pow: None },
+        }
+    }
+}
 
+/// Compute the constraint violation array for a whole population.
+/// Mirrors the module-level `calc_cv(pop, config)` in population.py.
+pub fn calc_cv(pop: &Population, config: Option<&CvConfig>) -> Array1<f64> {
+    let default_config = CvConfig::default();
+    let config = config.unwrap_or(&default_config);
 
-def pop_from_array_or_individual(array, pop=None):
-    # the population type can be different - (different type of individuals)
-    if pop is None:
-        pop = Population.empty()
+    let g_val = pop.get("G");
+    let h_val = pop.get("H");
 
-    # provide a whole population object - (individuals might be already evaluated)
-    if isinstance(array, Population):
-        pop = array
-    elif isinstance(array, np.ndarray):
-        pop = pop.new("X", np.atleast_2d(array))
-    elif isinstance(array, Individual):
-        pop = Population.empty(1)
-        pop[0] = array
-    else:
-        return None
+    let g_mat = match &g_val {
+        Value::FloatMatrix(m) => Some(m),
+        _ => None,
+    };
+    let h_mat = match &h_val {
+        Value::FloatMatrix(m) => Some(m),
+        _ => None,
+    };
 
-    return pop
-
-
-def merge(a, b):
-    if a is None:
-        return b
-    elif b is None:
-        return a
-
-    a, b = pop_from_array_or_individual(a), pop_from_array_or_individual(b)
-
-    if len(a) == 0:
-        return b
-    elif len(b) == 0:
-        return a
-    else:
-        obj = np.concatenate([a, b]).view(Population)
-        return obj
-
-
-def interleaving_args(*args, kwargs=None):
-    if len(args) % 2 != 0:
-        raise Exception(f"Even number of arguments are required but {len(args)} arguments were provided.")
-
-    if kwargs is None:
-        kwargs = {}
-
-    for i in range(int(len(args) / 2)):
-        key, values = args[i * 2], args[i * 2 + 1]
-        kwargs[key] = values
-    return kwargs
-
-
-def calc_cv(pop, config=None):
-
-    if config is None:
-        config = Individual.default_config()
-
-    G, H = pop.get("G", "H")
-
-    from pymoo.core.individual import calc_cv as func
-    CV = np.array([func(g, h, config) for g, h in zip(G, H)])
-    
-    return CV
+    let n = pop.len();
+    Array1::from_shape_fn(n, |i| {
+        let g_row = g_mat.map(|m| m.row(i).to_owned());
+        let h_row = h_mat.map(|m| m.row(i).to_owned());
+        calc_cv_individual(g_row.as_ref(), h_row.as_ref(), config)
+    })
+}

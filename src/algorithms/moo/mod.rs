@@ -1,1 +1,1 @@
-mod nsga2;
+pub mod nsga2;

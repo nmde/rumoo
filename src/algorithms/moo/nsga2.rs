@@ -2,9 +2,7 @@ use anyhow::{Result, anyhow};
 use ndarray::{Array1, Array2};
 use rand::rngs::StdRng;
 
-// ---------------------------------------------------------------------------------------------------------
-// Binary Tournament Selection Function
-// ---------------------------------------------------------------------------------------------------------
+use crate::core::population::Population;
 
 pub fn binary_tournament(
     pop: &Population,
@@ -76,27 +74,6 @@ pub fn binary_tournament(
     // s[:, None].astype(int)
     Ok(s.mapv(|x| x as i64).insert_axis(ndarray::Axis(1)))
 }
-
-// ---------------------------------------------------------------------------------------------------------
-// Survival Selection
-// ---------------------------------------------------------------------------------------------------------
-
-pub struct RankAndCrowdingSurvival {
-    survival: RankAndCrowding,
-}
-
-impl RankAndCrowdingSurvival {
-    pub fn new(nds: Option<NonDominatedSorting>, crowding_func: Option<&str>) -> Self {
-        let crowding_func = crowding_func.unwrap_or("cd");
-        Self {
-            survival: RankAndCrowding::new(nds, crowding_func),
-        }
-    }
-}
-
-// =========================================================================================================
-// Implementation
-// =========================================================================================================
 
 pub struct NSGA2 {
     pub algorithm: GeneticAlgorithm,

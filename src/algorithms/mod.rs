@@ -1,1 +1,1 @@
-mod moo;
+pub mod moo;
