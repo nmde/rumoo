@@ -2,16 +2,7 @@ use std::ops::{Index, IndexMut};
 
 use ndarray::{Array1, Array2};
 
-#[derive(Clone, Debug)]
-pub enum Value {
-    Float(f64),
-    Int(i64),
-    Bool(bool),
-    FloatArray(Array1<f64>),
-    IntArray(Array1<i64>),
-    BoolArray(Array1<bool>),
-    FloatMatrix(Array2<f64>),
-}
+use crate::core::individual::{Individual, Value, calc_cv as calc_cv_individual};
 
 /// A collection of `Individual`s.
 /// Mirrors `pymoo.core.population.Population` (a numpy array of individuals).
