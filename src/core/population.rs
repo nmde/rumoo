@@ -2,7 +2,7 @@ use std::ops::{Index, IndexMut};
 
 use ndarray::{Array1, Array2};
 
-use crate::core::individual::{Individual, Value, calc_cv as calc_cv_individual};
+use crate::core::individual::{Individual, IndividualField, Value, calc_cv as calc_cv_individual};
 
 /// A collection of `Individual`s.
 /// Mirrors `pymoo.core.population.Population` (a numpy array of individuals).
@@ -31,7 +31,7 @@ impl Population {
 
     /// Set a scalar attribute on every individual in the population.
     /// Mirrors `pop.set("rank", k)` where k is a scalar.
-    pub fn set(&mut self, key: &str, value: Value) {
+    pub fn set(&mut self, key: &IndividualField, value: Value) {
         for ind in &mut self.individuals {
             ind.set(key, value.clone());
         }
@@ -39,7 +39,7 @@ impl Population {
 
     /// Set a per-individual attribute from a `Vec<Value>` whose length equals the population size.
     /// Mirrors `pop.set("crowding", crowding_array)`.
-    pub fn set_each(&mut self, key: &str, values: Vec<Value>) {
+    pub fn set_each(&mut self, key: &IndividualField, values: Vec<Value>) {
         assert_eq!(
             values.len(),
             self.individuals.len(),
@@ -52,12 +52,12 @@ impl Population {
 
     /// Collect a named attribute from all individuals and stack into an array.
     /// Mirrors `pop.get("F")` → `Array2<f64>`, `pop.get("CV")` → `Array1<f64>`, etc.
-    pub fn get(&self, key: &str) -> Value {
+    pub fn get(&self, key: &IndividualField) -> Value {
         if self.individuals.is_empty() {
             return Value::FloatMatrix(Array2::zeros((0, 0)));
         }
         match key {
-            "F" => {
+            IndividualField::F => {
                 let n = self.individuals.len();
                 let m = self.individuals[0].f.len();
                 let mut out = Array2::zeros((n, m));
@@ -66,7 +66,7 @@ impl Population {
                 }
                 Value::FloatMatrix(out)
             }
-            "G" => {
+            IndividualField::G => {
                 let n = self.individuals.len();
                 let m = self.individuals[0].g.len();
                 let mut out = Array2::zeros((n, m));
@@ -75,7 +75,7 @@ impl Population {
                 }
                 Value::FloatMatrix(out)
             }
-            "H" => {
+            IndividualField::H => {
                 let n = self.individuals.len();
                 let m = self.individuals[0].h.len();
                 let mut out = Array2::zeros((n, m));
@@ -84,7 +84,7 @@ impl Population {
                 }
                 Value::FloatMatrix(out)
             }
-            "X" => {
+            IndividualField::X => {
                 let n = self.individuals.len();
                 let m = self.individuals[0].x.len();
                 let mut out = Array2::zeros((n, m));
@@ -93,13 +93,13 @@ impl Population {
                 }
                 Value::FloatMatrix(out)
             }
-            "CV" => {
+            IndividualField::CV => {
                 let cv: Vec<f64> = self.individuals.iter()
                     .map(|ind| ind.cv()[0])
                     .collect();
                 Value::FloatArray(Array1::from_vec(cv))
             }
-            "FEAS" => {
+            IndividualField::Feas => {
                 let feas: Vec<bool> = self.individuals.iter()
                     .map(|ind| ind.feas()[0])
                     .collect();
@@ -138,7 +138,7 @@ impl Population {
 
     /// Collect multiple named attributes in one call.
     /// Mirrors Python's `pop.get("G", "H")` returning a tuple.
-    pub fn get_many(&self, keys: &[&str]) -> Vec<Value> {
+    pub fn get_many(&self, keys: &[&IndividualField]) -> Vec<Value> {
         keys.iter().map(|k| self.get(k)).collect()
     }
 
@@ -154,7 +154,7 @@ impl Population {
 
     /// Mirrors `Population.new("X", x_matrix, ...)`.
     /// Accepts interleaved `(key, Value)` pairs; matrix values are split per-row.
-    pub fn new_with_attrs(attrs: &[(&str, Value)]) -> Self {
+    pub fn new_with_attrs(attrs: &[(&IndividualField, Value)]) -> Self {
         if attrs.is_empty() {
             return Self::empty(0);
         }
@@ -301,8 +301,8 @@ pub fn calc_cv(pop: &Population, config: Option<&CvConfig>) -> Array1<f64> {
     let default_config = CvConfig::default();
     let config = config.unwrap_or(&default_config);
 
-    let g_val = pop.get("G");
-    let h_val = pop.get("H");
+    let g_val = pop.get(&IndividualField::G);
+    let h_val = pop.get(&IndividualField::H);
 
     let g_mat = match &g_val {
         Value::FloatMatrix(m) => Some(m),

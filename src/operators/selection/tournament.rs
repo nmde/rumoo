@@ -2,7 +2,10 @@ use anyhow::{Result, anyhow};
 use ndarray::{Array2, s};
 use rand::{rngs::StdRng, seq::IndexedRandom};
 
-use crate::core::population::Population;
+use crate::{
+    core::population::Population,
+    util::{default_random_state, misc::random_permutations},
+};
 
 /*
 from pymoo.core.selection import Selection
@@ -18,7 +21,8 @@ from pymoo.util import default_random_state
 /// In Python the algorithm reference is forwarded via `**kwargs`. In Rust
 /// that context must be captured by the caller when constructing the closure
 /// (or passed through a trait-object context if more flexibility is needed).
-pub type CompareFunc = Box<dyn Fn(&Population, &Array2<usize>, Option<&mut StdRng>) -> Result<Array2<i64>>>;
+pub type CompareFunc =
+    Box<dyn Fn(&Population, &Array2<usize>, Option<&mut StdRng>) -> Result<Array2<i64>>>;
 
 /// Simulate a tournament between individuals.
 /// The selection pressure balances how greedy the genetic algorithm will be.
@@ -76,8 +80,7 @@ impl TournamentSelection {
         let p_flat = p_flat.slice(s![..n_random]).to_owned();
 
         // P = np.reshape(P, (n_select * n_parents, self.pressure))
-        let p = p_flat
-            .into_shape((n_select * n_parents, self.pressure))?;
+        let p = p_flat.into_shape((n_select * n_parents, self.pressure))?;
 
         // compare using tournament function
         // S = self.func_comp(pop, P, random_state=random_state, **kwargs)
@@ -139,7 +142,7 @@ pub fn compare(
     random_state: Option<&mut StdRng>,
 ) -> Option<usize> {
     let return_random_if_equal = return_random_if_equal.unwrap_or(false);
-    let random_state = random_state.unwrap_or(default_random_state());
+    let random_state = random_state.unwrap_or(&mut default_random_state());
     match method {
         CompareMethod::LargerIsBetter => {
             if a_val > b_val {

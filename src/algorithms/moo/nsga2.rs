@@ -5,6 +5,7 @@ use rand::rngs::StdRng;
 use crate::{
     core::{individual::IndividualField, population::Population},
     operators::selection::tournament::{CompareMethod, TournamentSelection, compare},
+    util::misc::has_feasible,
 };
 
 /*
@@ -17,7 +18,6 @@ from pymoo.operators.sampling.rnd import FloatRandomSampling
 from pymoo.termination.default import DefaultMultiObjectiveTermination
 from pymoo.util.display.multi import MultiObjectiveOutput
 from pymoo.util.dominator import Dominator
-from pymoo.util.misc import has_feasible
 */
 
 pub fn binary_tournament(
