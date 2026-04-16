@@ -114,7 +114,7 @@ impl Default for Individual {
     }
 }
 
-enum IndividualField {
+pub enum IndividualField {
     X,
     F,
     G,

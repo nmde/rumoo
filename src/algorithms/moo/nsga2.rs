@@ -2,7 +2,23 @@ use anyhow::{Result, anyhow};
 use ndarray::{Array1, Array2};
 use rand::rngs::StdRng;
 
-use crate::core::population::Population;
+use crate::{
+    core::{individual::IndividualField, population::Population},
+    operators::selection::tournament::{CompareMethod, TournamentSelection, compare},
+};
+
+/*
+from pymoo.algorithms.base.genetic import GeneticAlgorithm
+from pymoo.docs import parse_doc_string
+from pymoo.operators.crossover.sbx import SBX
+from pymoo.operators.mutation.pm import PM
+from pymoo.operators.survival.rank_and_crowding import RankAndCrowding
+from pymoo.operators.sampling.rnd import FloatRandomSampling
+from pymoo.termination.default import DefaultMultiObjectiveTermination
+from pymoo.util.display.multi import MultiObjectiveOutput
+from pymoo.util.dominator import Dominator
+from pymoo.util.misc import has_feasible
+*/
 
 pub fn binary_tournament(
     pop: &Population,
@@ -23,8 +39,14 @@ pub fn binary_tournament(
         let (a, b) = (p[[i, 0]], p[[i, 1]]);
         let (a_cv, a_f) = (pop[a].cv[0], &pop[a].f);
         let (b_cv, b_f) = (pop[b].cv[0], &pop[b].f);
-        let (rank_a, cd_a) = pop[a].get("rank", "crowding");
-        let (rank_b, cd_b) = pop[b].get("rank", "crowding");
+        let (rank_a, cd_a) = pop[a].get_tuple(
+            &IndividualField::DataField("rank".to_string()),
+            &IndividualField::DataField("crowding".to_string()),
+        );
+        let (rank_b, cd_b) = pop[b].get_tuple(
+            &IndividualField::DataField("rank".to_string()),
+            &IndividualField::DataField("crowding".to_string()),
+        );
 
         // if at least one solution is infeasible
         if a_cv > 0.0 || b_cv > 0.0 {
@@ -33,8 +55,8 @@ pub fn binary_tournament(
                 a_cv,
                 b,
                 b_cv,
-                "smaller_is_better",
-                true,
+                &CompareMethod::SmallerIsBetter,
+                Some(true),
                 Some(&algorithm.random_state),
             )
             .map_or(f64::NAN, |w| w as f64);
@@ -49,8 +71,16 @@ pub fn binary_tournament(
                     s[i] = b as f64;
                 }
             } else if tournament_type == "comp_by_rank_and_crowding" {
-                s[i] = compare(a, rank_a, b, rank_b, "smaller_is_better", false, None)
-                    .map_or(f64::NAN, |w| w as f64);
+                s[i] = compare(
+                    a,
+                    rank_a,
+                    b,
+                    rank_b,
+                    &CompareMethod::SmallerIsBetter,
+                    Some(false),
+                    None,
+                )
+                .map_or(f64::NAN, |w| w as f64);
             } else {
                 return Err(anyhow!("Unknown tournament type: {tournament_type}"));
             }
@@ -92,7 +122,10 @@ impl NSGA2 {
         output: Option<Box<dyn Output>>,
         advance_after_initial_infill: bool,
     ) -> Self {
-        let selection = selection.unwrap_or_else(|| TournamentSelection::new(binary_tournament));
+        let selection = selection.unwrap_or(Box::new(TournamentSelection::new(
+            Some(Box::new(binary_tournament)),
+            None,
+        )));
         let survival = survival.unwrap_or_else(|| RankAndCrowding::new(None, "cd"));
         let output = output.unwrap_or_else(MultiObjectiveOutput::new);
 
