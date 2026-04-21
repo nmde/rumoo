@@ -3,7 +3,10 @@ use ndarray::{Array1, Array2};
 use rand::rngs::StdRng;
 
 use crate::{
-    core::{individual::IndividualField, population::Population},
+    core::{
+        crossover::Crossover, individual::IndividualField, mutation::Mutation,
+        population::Population, sampling::Sampling, selection::Selection, survival::Survival,
+    },
     operators::selection::tournament::{CompareMethod, TournamentSelection, compare},
     util::misc::has_feasible,
 };
@@ -57,7 +60,7 @@ pub fn binary_tournament(
                 b_cv,
                 &CompareMethod::SmallerIsBetter,
                 Some(true),
-                Some(&algorithm.random_state),
+                Some(&mut algorithm.random_state),
             )
             .map_or(f64::NAN, |w| w as f64);
         }
@@ -92,8 +95,8 @@ pub fn binary_tournament(
                     cd_a,
                     b,
                     cd_b,
-                    "larger_is_better",
-                    true,
+                    &CompareMethod::LargerIsBetter,
+                    Some(true),
                     Some(&algorithm.random_state),
                 )
                 .map_or(f64::NAN, |w| w as f64);

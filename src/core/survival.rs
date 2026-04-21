@@ -1,107 +1,265 @@
-from abc import abstractmethod
+use std::cmp::Ordering;
 
-import numpy as np
+use rand::rngs::StdRng;
 
-from pymoo.core.population import Population
-from pymoo.util import default_random_state
+use crate::{
+    core::{
+        individual::{IndividualField, Value},
+        population::{Population, merge},
+        problem::Problem,
+    },
+    util::default_random_state,
+};
 
+/// Return type of `Survival::do_survival`, chosen by the `return_indices` flag.
+///
+/// Mirrors the two return paths of `Survival.do`:
+/// - `return_indices=False` → `Survivors`
+/// - `return_indices=True`  → `Indices`
+pub enum SurvivalResult {
+    Survivors(Population),
+    Indices(Vec<usize>),
+}
 
-# ---------------------------------------------------------------------------------------------------------
-# Survival
-# ---------------------------------------------------------------------------------------------------------
+/// Abstract base for survival selection strategies.
+///
+/// Mirrors `pymoo.core.survival.Survival`.
+pub trait Survival {
+    fn filter_infeasible(&self) -> bool {
+        true
+    }
 
+    /// Select `n_survive` individuals to carry forward to the next generation.
+    ///
+    /// `off` is an optional offspring population forwarded as `*args` to
+    /// `_do_survival` (used by `ToReplacement`).
+    ///
+    /// Mirrors `Survival.do(problem, pop, n_survive=None, random_state=None,
+    ///                      return_indices=False)`.
+    fn do_survival(
+        &self,
+        problem: &dyn Problem,
+        pop: &Population,
+        off: Option<&Population>,
+        n_survive: Option<usize>,
+        mut random_state: Option<&mut StdRng>,
+        return_indices: Option<bool>,
+    ) -> SurvivalResult {
+        let return_indices = return_indices.unwrap_or(true);
+        if pop.is_empty() {
+            return if return_indices {
+                SurvivalResult::Indices(vec![])
+            } else {
+                SurvivalResult::Survivors(Population::empty(0))
+            };
+        }
 
-class Survival:
+        let n_survive = n_survive.unwrap_or_else(|| pop.len()).min(pop.len());
 
-    def __init__(self, filter_infeasible=True):
-        super().__init__()
-        self.filter_infeasible = filter_infeasible
+        // Tag every individual with its original index so we can recover indices
+        // after survival selection regardless of cloning.
+        // Mirrors the `H = {ind: k for k, ind in enumerate(pop)}` map used later.
+        let mut tagged = pop.clone();
+        for (k, ind) in tagged.iter_mut().enumerate() {
+            ind.data
+                .insert("__orig_idx__".to_string(), Value::Int(k as i64));
+        }
 
-    @default_random_state
-    def do(self,
-           problem,
-           pop,
-           *args,
-           n_survive=None,
-           random_state=None,
-           return_indices=False,
-           **kwargs):
+        let survivors = if self.filter_infeasible() && problem.has_constraints() {
+            // split feasible and infeasible solutions
+            let (feas, infeas) = split_by_feasibility(&tagged, Some(true), Some(false));
 
-        # make sure the population has at least one individual
-        if len(pop) == 0:
-            return pop
+            let feas_survivors = if feas.is_empty() {
+                Population::empty(0)
+            } else {
+                let feas_pop = tagged.select(&feas);
+                self._do_survival(
+                    problem,
+                    &feas_pop,
+                    off,
+                    Some(feas.len().min(n_survive)),
+                    random_state.as_deref_mut(),
+                )
+            };
 
-        if n_survive is None:
-            n_survive = len(pop)
+            // fill remaining slots with infeasible individuals (sorted by CV)
+            let n_remaining = n_survive - feas_survivors.len();
+            if n_remaining > 0 {
+                let take = n_remaining.min(infeas.len());
+                let infeas_pop = tagged.select(&infeas[..take]);
+                merge(feas_survivors, infeas_pop)
+            } else {
+                feas_survivors
+            }
+        } else {
+            self._do_survival(problem, &tagged, off, Some(n_survive), random_state)
+        };
 
-        n_survive = min(n_survive, len(pop))
+        if return_indices {
+            // mirrors: return [H[survivor] for survivor in survivors]
+            let indices: Vec<usize> = survivors
+                .iter()
+                .filter_map(|ind| match ind.data.get("__orig_idx__") {
+                    Some(Value::Int(k)) => Some(*k as usize),
+                    _ => None,
+                })
+                .collect();
+            SurvivalResult::Indices(indices)
+        } else {
+            SurvivalResult::Survivors(survivors)
+        }
+    }
 
-        # if the split should be done beforehand
-        if self.filter_infeasible and problem.has_constraints():
+    /// Abstract — subclasses must implement.
+    ///
+    /// `off` carries any extra positional arguments forwarded from `do_survival`
+    /// (e.g. the offspring population for `ToReplacement`).
+    ///
+    /// Mirrors `Survival._do(problem, pop, n_survive=None, random_state=None)`.
+    fn _do_survival(
+        &self,
+        problem: &dyn Problem,
+        pop: &Population,
+        off: Option<&Population>,
+        n_survive: Option<usize>,
+        random_state: Option<&mut StdRng>,
+    ) -> Population;
+}
 
-            # split feasible and infeasible solutions
-            feas, infeas = split_by_feasibility(pop, sort_infeas_by_cv=True)
+/// Wraps a survival strategy and applies replacement: offspring replace parents
+/// only when the offspring rank better under the wrapped survival.
+///
+/// Mirrors `pymoo.core.survival.ToReplacement`.
+pub struct ToReplacement {
+    pub survival: Box<dyn Survival>,
+}
 
-            if len(feas) == 0:
-                survivors = Population()
-            else:
-                survivors = self._do(problem, pop[feas], *args, n_survive=min(len(feas), n_survive),
-                                     random_state=random_state, **kwargs)
+impl ToReplacement {
+    pub fn new(survival: Box<dyn Survival>) -> Self {
+        Self { survival }
+    }
+}
 
-            # calculate how many individuals are still remaining to be filled up with infeasible ones
-            n_remaining = n_survive - len(survivors)
+impl Survival for ToReplacement {
+    fn filter_infeasible(&self) -> bool {
+        false
+    }
 
-            # if infeasible solutions needs to be added
-            if n_remaining > 0:
-                survivors = Population.merge(survivors, pop[infeas[:n_remaining]])
+    /// Mirrors `ToReplacement._do(problem, pop, off, random_state)`.
+    fn _do_survival(
+        &self,
+        problem: &dyn Problem,
+        pop: &Population,
+        off: Option<&Population>,
+        _n_survive: Option<usize>,
+        mut random_state: Option<&mut StdRng>,
+    ) -> Population {
+        let random_state = random_state.unwrap_or(&mut default_random_state());
 
-        else:
-            survivors = self._do(problem, pop, *args, n_survive=n_survive, random_state=random_state, **kwargs)
+        let off = match off {
+            Some(o) => o,
+            None => return *pop,
+        };
 
-        if return_indices:
-            H = {}
-            for k, ind in enumerate(pop):
-                H[ind] = k
-            return [H[survivor] for survivor in survivors]
-        else:
-            return survivors
+        let n = pop.len();
+        let merged = merge(*pop, *off);
+        let n_merged = merged.len();
 
-    @abstractmethod
-    def _do(self, problem, pop, *args, n_survive=None, random_state=None, **kwargs):
-        pass
+        // rank all merged individuals by the wrapped survival strategy
+        // mirrors: I = self.survival.do(problem, merged, n_survive=len(merged),
+        //                               return_indices=True, ...)
+        let result = self.survival.do_survival(
+            problem,
+            &merged,
+            None,
+            Some(n_merged),
+            Some(random_state),
+            Some(true),
+        );
 
+        let rank_vec = match result {
+            SurvivalResult::Indices(v) => v,
+            _ => return *pop,
+        };
 
-class ToReplacement(Survival):
+        // mirrors: merged.set("__rank__", I)
+        // In Python shared references propagate the rank back to pop/off elements.
+        // In Rust we access rank_vec directly: pop[k] ↔ rank_vec[k],
+        //                                       off[k] ↔ rank_vec[n + k].
 
-    def __init__(self, survival):
-        super().__init__(False)
-        self.survival = survival
+        // for k in range(len(pop)):
+        //     if off[k].get("__rank__") < pop[k].get("__rank__"):
+        //         pop[k] = off[k]
+        let mut result_pop = pop.clone();
+        for k in 0..n {
+            let pop_rank = rank_vec.get(k).copied().unwrap_or(usize::MAX);
+            let off_rank = rank_vec.get(n + k).copied().unwrap_or(usize::MAX);
+            if off_rank < pop_rank {
+                result_pop[k] = off[k].clone();
+            }
+        }
 
-    def _do(self, problem, pop, off, random_state=None, **kwargs):
-        merged = Population.merge(pop, off)
-        I = self.survival.do(problem, merged, n_survive=len(merged), return_indices=True, random_state=random_state, **kwargs)
-        merged.set("__rank__", I)
+        *result_pop
+    }
+}
 
-        for k in range(len(pop)):
-            if off[k].get("__rank__") < pop[k].get("__rank__"):
-                pop[k] = off[k]
+/// Split a population into feasible and infeasible index sets.
+///
+/// `sort_infeas_by_cv` — sort infeasible indices ascending by constraint violation.
+/// `sort_feas_by_obj`  — sort feasible indices ascending by first objective value.
+///
+/// Mirrors `pymoo.core.survival.split_by_feasibility(
+///     pop, sort_infeas_by_cv=True, sort_feas_by_obj=False, return_pop=False)`.
+///
+/// The `return_pop=True` variant is omitted; callers can call `pop.select(&feas)` themselves.
+pub fn split_by_feasibility(
+    pop: &Population,
+    sort_infeas_by_cv: Option<bool>,
+    sort_feas_by_obj: Option<bool>,
+) -> (Vec<usize>, Vec<usize>) {
+    let sort_infeas_by_cv = sort_infeas_by_cv.unwrap_or(true);
+    let sort_feas_by_obj = sort_feas_by_obj.unwrap_or(false);
+    // mirrors: F, CV, b = pop.get("F", "CV", "FEAS")
+    let b = match pop.get(&IndividualField::Feas) {
+        Value::BoolArray(arr) => arr,
+        _ => return (vec![], (0..pop.len()).collect()),
+    };
 
-        return pop
+    let cv = match pop.get(&IndividualField::CV) {
+        Value::FloatArray(arr) => arr,
+        _ => return ((0..pop.len()).collect(), vec![]),
+    };
 
+    let f_val = pop.get(&IndividualField::F);
 
-def split_by_feasibility(pop, sort_infeas_by_cv=True, sort_feas_by_obj=False, return_pop=False):
-    F, CV, b = pop.get("F", "CV", "FEAS")
+    // mirrors: feasible = np.where(b)[0]; infeasible = np.where(~b)[0]
+    let mut feasible: Vec<usize> = b
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &feas)| if feas { Some(i) } else { None })
+        .collect();
 
-    feasible = np.where(b)[0]
-    infeasible = np.where(~b)[0]
+    let mut infeasible: Vec<usize> = b
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &feas)| if !feas { Some(i) } else { None })
+        .collect();
 
-    if sort_infeas_by_cv:
-        infeasible = infeasible[np.argsort(CV[infeasible, 0])]
+    // mirrors: infeasible = infeasible[np.argsort(CV[infeasible, 0])]
+    if sort_infeas_by_cv {
+        infeasible.sort_by(|&a, &b| cv[a].partial_cmp(&cv[b]).unwrap_or(Ordering::Equal));
+    }
 
-    if sort_feas_by_obj:
-        feasible = feasible[np.argsort(F[feasible, 0])]
+    // mirrors: feasible = feasible[np.argsort(F[feasible, 0])]
+    if sort_feas_by_obj {
+        if let Value::FloatMatrix(ref f_mat) = f_val {
+            feasible.sort_by(|&a, &b| {
+                f_mat[[a, 0]]
+                    .partial_cmp(&f_mat[[b, 0]])
+                    .unwrap_or(Ordering::Equal)
+            });
+        }
+    }
 
-    if not return_pop:
-        return feasible, infeasible
-    else:
-        return feasible, infeasible, pop[feasible], pop[infeasible]
+    (feasible, infeasible)
+}

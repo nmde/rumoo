@@ -1,79 +1,170 @@
-import numpy as np
+use ndarray::{s, Array2, Array3};
+use rand::{rngs::StdRng, seq::SliceRandom};
 
-from pymoo.core.operator import Operator
-from pymoo.core.population import Population
-from pymoo.core.variable import Real, get
-from pymoo.util import default_random_state
+use crate::core::{
+    individual::{IndividualField, Value},
+    operator::Operator,
+    population::Population,
+    problem::Problem,
+};
 
+/// Extra data fields specific to crossover operators.
+///
+/// Mirrors the `__init__` attributes added by `pymoo.core.crossover.Crossover`
+/// on top of `Operator`.
+pub struct CrossoverBase {
+    pub n_parents: usize,
+    pub n_offsprings: usize,
+    /// Probability that crossover is applied to a mating (default 0.9).
+    /// Mirrors `self.prob = Real(prob, bounds=(0.5, 1.0), strict=(0.0, 1.0))`.
+    pub prob: f64,
+}
 
-class Crossover(Operator):
+impl CrossoverBase {
+    pub fn new(n_parents: usize, n_offsprings: usize, prob: Option<f64>) -> Self {
+        Self {
+            n_parents,
+            n_offsprings,
+            prob: prob.unwrap_or(0.9),
+        }
+    }
+}
 
-    def __init__(self,
-                 n_parents,
-                 n_offsprings,
-                 prob=0.9,
-                 **kwargs):
-        super().__init__(**kwargs)
-        self.n_parents = n_parents
-        self.n_offsprings = n_offsprings
-        self.prob = Real(prob, bounds=(0.5, 1.0), strict=(0.0, 1.0))
+/// Abstract base for recombination (crossover) operators.
+///
+/// Mirrors `pymoo.core.crossover.Crossover`.
+pub trait Crossover: Operator {
+    fn crossover_base(&self) -> &CrossoverBase;
 
-    @default_random_state
-    def do(self, problem, pop, parents=None, *args, random_state=None, **kwargs):
+    /// Apply the crossover to a population.
+    ///
+    /// `parents` — optional index matrix of shape `(n_matings, n_parents)` that
+    /// selects which individuals from `pop` participate in each mating.
+    /// When `None`, pop is assumed to be pre-grouped as consecutive blocks of
+    /// `n_parents` individuals per mating.
+    ///
+    /// Mirrors `Crossover.do(problem, pop, parents=None, random_state=None)`.
+    fn do_crossover(
+        &self,
+        problem: &dyn Problem,
+        pop: &Population,
+        parents: Option<&Array2<usize>>,
+        mut random_state: Option<&mut StdRng>,
+    ) -> Population {
+        let n_parents = self.crossover_base().n_parents;
+        let n_offsprings = self.crossover_base().n_offsprings;
+        let prob = self.crossover_base().prob;
+        let n_var = problem.base().n_var as usize;
 
-        # if a parents with array with mating indices is provided -> transform the input first
-        if parents is not None:
-            pop = [pop[mating] for mating in parents]
+        // n_matings: number of crossover operations to perform
+        let n_matings = match parents {
+            Some(p) => p.nrows(),
+            None => pop.len() / n_parents,
+        };
 
-        # get the dimensions necessary to create in and output
-        n_parents, n_offsprings = self.n_parents, self.n_offsprings
-        n_matings, n_var = len(pop), problem.n_var
+        // Collect X from all parents into a 3-D array of shape (n_parents, n_matings, n_var).
+        // Mirrors: X = np.swapaxes([[parent.get("X") for parent in mating] for mating in pop], 0, 1)
+        let mut x = Array3::<f64>::zeros((n_parents, n_matings, n_var));
+        for mating in 0..n_matings {
+            for slot in 0..n_parents {
+                let ind_idx = match parents {
+                    Some(p) => p[[mating, slot]],
+                    None => mating * n_parents + slot,
+                };
+                if let Some(ref xi) = pop[ind_idx].x {
+                    x.slice_mut(s![slot, mating, ..]).assign(xi);
+                }
+            }
+        }
 
-        # get the actual values from each of the parents
-        X = np.swapaxes(np.array([[parent.get("X") for parent in mating] for mating in pop]), 0, 1)
-        if self.vtype is not None:
-            X = X.astype(self.vtype)
+        // Output offspring array: shape (n_offsprings, n_matings, n_var).
+        let mut xp = Array3::<f64>::zeros((n_offsprings, n_matings, n_var));
 
-        # the array where the offsprings will be stored to
-        Xp = np.empty(shape=(n_offsprings, n_matings, n_var), dtype=X.dtype)
+        // Per-mating crossover mask.
+        // Mirrors: prob = get(self.prob, size=n_matings); cross = random_state.random(n_matings) < prob
+        let mut cross = vec![false; n_matings];
+        if let Some(ref mut rng) = random_state {
+            for c in cross.iter_mut() {
+                *c = rng.random::<f64>() < prob;
+            }
+        }
 
-        # the probability of executing the crossover
-        prob = get(self.prob, size=n_matings)
+        let any_cross = cross.iter().any(|&c| c);
 
-        # a boolean mask when crossover is actually executed
-        cross = random_state.random(n_matings) < prob
+        // Run _do_crossover and assign results for matings where crossover fires.
+        if any_cross {
+            let q = self._do_crossover(problem, &x, random_state.as_deref_mut());
+            assert_eq!(
+                q.shape(),
+                &[n_offsprings, n_matings, n_var],
+                "Shape is incorrect of crossover impl."
+            );
+            for (k, &c) in cross.iter().enumerate() {
+                if c {
+                    xp.slice_mut(s![.., k, ..]).assign(&q.slice(s![.., k, ..]));
+                }
+            }
+        }
 
-        # the design space from the parents used for the crossover
-        if np.any(cross):
+        // For matings where NO crossover fires: copy parent X directly into offspring slots.
+        // Mirrors the `for k in np.flatnonzero(~cross):` block.
+        for (k, &c) in cross.iter().enumerate() {
+            if !c {
+                // build the mapping from offspring slot → parent slot
+                let parent_slots: Vec<usize> = if n_offsprings < n_parents {
+                    // sample without replacement
+                    // mirrors: s = random_state.choice(np.arange(n_parents), size=n_offsprings, replace=False)
+                    let mut indices: Vec<usize> = (0..n_parents).collect();
+                    if let Some(ref mut rng) = random_state {
+                        indices.shuffle(rng);
+                    }
+                    indices.truncate(n_offsprings);
+                    indices
+                } else if n_offsprings == n_parents {
+                    // mirrors: s = np.arange(n_parents)
+                    (0..n_parents).collect()
+                } else {
+                    // extend with repeated permutations until we have enough
+                    // mirrors: while len(s) < n_offsprings: s.extend(random_state.permutation(n_parents))
+                    let mut slots: Vec<usize> = Vec::new();
+                    while slots.len() < n_offsprings {
+                        let mut perm: Vec<usize> = (0..n_parents).collect();
+                        if let Some(ref mut rng) = random_state {
+                            perm.shuffle(rng);
+                        }
+                        slots.extend_from_slice(&perm);
+                    }
+                    slots.truncate(n_offsprings);
+                    slots
+                };
 
-            # we can not prefilter for cross first, because there might be other variables using the same shape as X
-            Q = self._do(problem, X, *args, random_state=random_state, **kwargs)
-            assert Q.shape == (n_offsprings, n_matings, problem.n_var), "Shape is incorrect of crossover impl."
-            Xp[:, cross] = Q[:, cross]
+                // mirrors: Xp[:, k] = np.copy(X[s, k])
+                for (offspring_slot, &parent_slot) in parent_slots.iter().enumerate() {
+                    xp.slice_mut(s![offspring_slot, k, ..])
+                        .assign(&x.slice(s![parent_slot, k, ..]));
+                }
+            }
+        }
 
-        # now set the parents whenever NO crossover has been applied
-        for k in np.flatnonzero(~cross):
-            if n_offsprings < n_parents:
-                s = random_state.choice(np.arange(self.n_parents), size=n_offsprings, replace=False)
-            elif n_offsprings == n_parents:
-                s = np.arange(n_parents)
-            else:
-                s = []
-                while len(s) < n_offsprings:
-                    s.extend(random_state.permutation(n_parents))
-                s = s[:n_offsprings]
+        // Flatten (n_offsprings, n_matings, n_var) → (n_offsprings * n_matings, n_var).
+        // Mirrors: Xp = Xp.reshape(-1, X.shape[-1])
+        let n_total = n_offsprings * n_matings;
+        let xp_2d = xp.into_shape((n_total, n_var)).expect("crossover reshape failed");
 
-            Xp[:, k] = np.copy(X[s, k])
+        // Mirrors: off = Population.new("X", Xp)
+        Population::new_with_attrs(&[(&IndividualField::X, Value::FloatMatrix(xp_2d))])
+    }
 
-        # flatten the array to become a 2d-array
-        Xp = Xp.reshape(-1, X.shape[-1])
-
-        # create a population object
-        off = Population.new("X", Xp)
-
-        return off
-
-    def _do(self, problem, X, *args, random_state=None, **kwargs):
-        pass
-
-
+    /// Abstract — subclasses must implement.
+    ///
+    /// Receives `x` of shape `(n_parents, n_matings, n_var)`.
+    /// Must return offspring of shape `(n_offsprings, n_matings, n_var)`.
+    ///
+    /// Mirrors `Crossover._do(problem, X, random_state)`.
+    fn _do_crossover(
+        &self,
+        problem: &dyn Problem,
+        x: &Array3<f64>,
+        random_state: Option<&mut StdRng>,
+    ) -> Array3<f64>;
+}

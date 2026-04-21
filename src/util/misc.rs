@@ -14,6 +14,7 @@ use crate::{
         individual::{IndividualField, Value},
         population::Population,
         problem::Problem,
+        sampling::Sampling,
     },
     util::default_random_state,
 };

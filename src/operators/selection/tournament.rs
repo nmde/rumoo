@@ -3,7 +3,7 @@ use ndarray::{Array2, s};
 use rand::{rngs::StdRng, seq::IndexedRandom};
 
 use crate::{
-    core::population::Population,
+    core::{population::Population, problem::Problem},
     util::{default_random_state, misc::random_permutations},
 };
 

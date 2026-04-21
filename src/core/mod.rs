@@ -1,3 +1,9 @@
+pub mod crossover;
 pub mod individual;
+pub mod mutation;
+pub mod operator;
 pub mod population;
 pub mod problem;
+pub mod sampling;
+pub mod selection;
+pub mod survival;
