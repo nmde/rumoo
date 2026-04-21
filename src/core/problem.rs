@@ -1,396 +1,473 @@
-from __future__ import annotations
-
-from abc import abstractmethod
-
-import numpy as np
-
-import pymoo.gradient.toolbox as anp
-from pymoo.util.cache import Cache
-from pymoo.util.misc import at_least_2d_array
-
-
-class LoopedElementwiseEvaluation:
-    """Default sequential evaluation for elementwise problems."""
-
-    def __call__(self, f, X):
-        return [f(x) for x in X]
-
-
-class ElementwiseEvaluationFunction:
-
-    def __init__(self, problem, args, kwargs) -> None:
-        super().__init__()
-        self.problem = problem
-        self.args = args
-        self.kwargs = kwargs
-
-    def __call__(self, x):
-        out = dict()
-        self.problem._evaluate(x, out, *self.args, **self.kwargs)
-        return out
-
-
-class Problem:
-    def __init__(self,
-                 n_var=-1,
-                 n_obj=1,
-                 n_ieq_constr=0,
-                 n_eq_constr=0,
-                 xl=None,
-                 xu=None,
-                 vtype=None,
-                 vars=None,
-                 elementwise=False,
-                 elementwise_func=ElementwiseEvaluationFunction,
-                 elementwise_runner=LoopedElementwiseEvaluation(),
-                 requires_kwargs=False,
-                 replace_nan_values_by=None,
-                 exclude_from_serialization=None,
-                 callback=None,
-                 strict=True,
-                 **kwargs):
-
-        """
-
-        Parameters
-        ----------
-        n_var : int
-            Number of Variables
-
-        n_obj : int
-            Number of Objectives
-
-        n_ieq_constr : int
-            Number of Inequality Constraints
-
-        n_eq_constr : int
-            Number of Equality Constraints
-
-        xl : np.array, float, int
-            Lower bounds for the variables. if integer all lower bounds are equal.
-
-        xu : np.array, float, int
-            Upper bounds for the variable. if integer all upper bounds are equal.
-
-        vtype : type
-            The variable type. So far, just used as a type hint.
-
-        """
-
-        # number of variable
-        self.n_var = n_var
-
-        # number of objectives
-        self.n_obj = n_obj
-
-        # number of inequality constraints
-        self.n_ieq_constr = n_ieq_constr if "n_constr" not in kwargs else max(n_ieq_constr, kwargs["n_constr"])
-
-        # number of equality constraints
-        self.n_eq_constr = n_eq_constr
-
-        # type of the variable to be evaluated
-        self.data = dict(**kwargs)
-
-        # the lower bounds, make sure it is a numpy array with the length of n_var
-        self.xl, self.xu = xl, xu
-
-        # a callback function to be called after every evaluation
-        self.callback = callback
-
-        # if the variables are provided in their explicit form
-        if vars is not None:
-            self.vars = vars
-            self.n_var = len(vars)
-
-            if self.xl is None:
-                self.xl = {name: var.lb if hasattr(var, "lb") else None for name, var in vars.items()}
-            if self.xu is None:
-                self.xu = {name: var.ub if hasattr(var, "ub") else None for name, var in vars.items()}
-
-        # the variable type (only as a type hint at this point)
-        self.vtype = vtype
-
-        # the functions used if elementwise is enabled
-        self.elementwise = elementwise
-        self.elementwise_func = elementwise_func
-        self.elementwise_runner = elementwise_runner
-
-        # whether evaluation requires kwargs (passing them can cause overhead in parallelization)
-        self.requires_kwargs = requires_kwargs
-
-        # whether the shapes are checked strictly
-        self.strict = strict
-
-        # if it is a problem with an actual number of variables - make sure xl and xu are numpy arrays
-        if n_var > 0:
-
-            if self.xl is not None:
-                if not isinstance(self.xl, np.ndarray):
-                    self.xl = np.ones(n_var) * xl
-                self.xl = self.xl.astype(float)
-
-            if self.xu is not None:
-                if not isinstance(self.xu, np.ndarray):
-                    self.xu = np.ones(n_var) * xu
-                self.xu = self.xu.astype(float)
-
-        # this defines if NaN values should be replaced or not
-        self.replace_nan_values_by = replace_nan_values_by
-
-        # attribute which are excluded from being serialized
-        self.exclude_from_serialization = exclude_from_serialization
-
-    def evaluate(self,
-                 X,
-                 *args,
-                 return_values_of=None,
-                 return_as_dictionary=False,
-                 **kwargs):
-
-        # if the problem does not require any kwargs they are re-initialized
-        if not self.requires_kwargs:
-            kwargs = dict()
-
-        if return_values_of is None:
-            return_values_of = ["F"]
-            if self.n_ieq_constr > 0:
-                return_values_of.append("G")
-            if self.n_eq_constr > 0:
-                return_values_of.append("H")
-
-        # make sure the array is at least 2d. store if reshaping was necessary
-        if isinstance(X, np.ndarray) and X.dtype != object:
-            X, only_single_value = at_least_2d_array(X, extend_as="row", return_if_reshaped=True)
-            assert X.shape[1] == self.n_var, f'Input dimension {X.shape[1]} are not equal to n_var {self.n_var}!'
-        else:
-            only_single_value = not (isinstance(X, list) or isinstance(X, np.ndarray))
-
-        # this is where the actual evaluation takes place
-        _out = self.do(X, return_values_of, *args, **kwargs)
-
-        out = {}
-        for k, v in _out.items():
-
-            # copy it to a numpy array (it might be one of jax at this point)
-            v = np.array(v)
-
-            # in case the input had only one dimension, then remove always the first dimension from each output
-            if only_single_value:
-                v = v[0]
-
-            # if the NaN values should be replaced
-            if self.replace_nan_values_by is not None:
-                v[np.isnan(v)] = self.replace_nan_values_by
-
-            try:
-                out[k] = v.astype(np.float64)
-            except:
-                out[k] = v
-
-        if self.callback is not None:
-            self.callback(X, out)
-
-        # now depending on what should be returned prepare the output
-        if return_as_dictionary:
-            return out
-
-        if len(return_values_of) == 1:
-            return out[return_values_of[0]]
-        else:
-            return tuple([out[e] for e in return_values_of])
-
-    def do(self, X, return_values_of, *args, **kwargs):
-
-        # create an empty dictionary
-        out = {name: None for name in return_values_of}
-
-        # do the function evaluation
-        if self.elementwise:
-            self._evaluate_elementwise(X, out, *args, **kwargs)
-        else:
-            self._evaluate_vectorized(X, out, *args, **kwargs)
-
-        # finally format the output dictionary
-        out = self._format_dict(out, len(X), return_values_of)
-
-        return out
-
-    def _evaluate_vectorized(self, X, out, *args, **kwargs):
-        self._evaluate(X, out, *args, **kwargs)
-
-    def _evaluate_elementwise(self, X, out, *args, **kwargs):
-
-        # create the function that evaluates a single individual
-        f = self.elementwise_func(self, args, kwargs)
-
-        # execute the runner
-        elems = self.elementwise_runner(f, X)
-
-        # for each evaluation call
-        for elem in elems:
-
-            # for each key stored for this evaluation
-            for k, v in elem.items():
-
-                # if the element does not exist in out yet -> create it
-                if out.get(k, None) is None:
-                    out[k] = []
-
-                out[k].append(v)
-
-        # convert to arrays (the none check is important because otherwise an empty array is initialized)
-        for k in out:
-            if out[k] is not None:
-                out[k] = anp.array(out[k])
-
-    def _format_dict(self, out, N, return_values_of):
-
-        # get the default output shape for the default values
-        shape = default_shape(self, N)
-
-        # finally the array to be returned
-        ret = {}
-
-        # for all values that have been set in the user implemented function
-        for name, v in out.items():
-
-            # only if they have truly been set
-            if v is not None:
-
-                # if there is a shape to be expected
-                if name in shape:
-
-                    if isinstance(v, list):
-                        v = anp.column_stack(v)
-
-                    try:
-                        v = v.reshape(shape[name])
-                    except Exception as e:
-                        raise Exception(
-                            f"Problem Error: {name} can not be set, expected shape {shape[name]} but provided {v.shape}",
-                            e)
-
-                ret[name] = v
-
-        # if some values that are necessary have not been set
-        for name in return_values_of:
-            if name not in ret:
-                s = shape.get(name, N)
-                ret[name] = np.full(s, np.inf)
-
-        return ret
-
-    @Cache
-    def nadir_point(self, *args, **kwargs):
-        pf = self.pareto_front(*args, **kwargs)
-        if pf is not None:
-            return np.max(pf, axis=0)
-
-    @Cache
-    def ideal_point(self, *args, **kwargs):
-        pf = self.pareto_front(*args, **kwargs)
-        if pf is not None:
-            return np.min(pf, axis=0)
-
-    @Cache
-    def pareto_front(self, *args, **kwargs):
-        pf = self._calc_pareto_front(*args, **kwargs)
-        pf = at_least_2d_array(pf, extend_as='r')
-        if pf is not None and pf.shape[1] == 2:
-            pf = pf[np.argsort(pf[:, 0])]
-        return pf
-
-    @Cache
-    def pareto_set(self, *args, **kwargs):
-        ps = self._calc_pareto_set(*args, **kwargs)
-        ps = at_least_2d_array(ps, extend_as='r')
-        return ps
-
-    @property
-    def n_constr(self):
-        return self.n_ieq_constr + self.n_eq_constr
-
-    @abstractmethod
-    def _evaluate(self, x, out, *args, **kwargs):
-        pass
-
-    def has_bounds(self):
-        return self.xl is not None and self.xu is not None
-
-    def has_constraints(self):
-        return self.n_constr > 0
-
-    def bounds(self):
-        return self.xl, self.xu
-
-    def name(self):
-        return self.__class__.__name__
-
-    def _calc_pareto_front(self, *args, **kwargs):
-        pass
-
-    def _calc_pareto_set(self, *args, **kwargs):
-        pass
-
-    def __str__(self):
-        s = "# name: %s\n" % self.name()
-        s += "# n_var: %s\n" % self.n_var
-        s += "# n_obj: %s\n" % self.n_obj
-        s += "# n_ieq_constr: %s\n" % self.n_ieq_constr
-        s += "# n_eq_constr: %s\n" % self.n_eq_constr
-        return s
-
-    def __getstate__(self):
-        if self.exclude_from_serialization is not None:
-            state = self.__dict__.copy()
-
-            # exclude objects which should not be stored
-            for key in self.exclude_from_serialization:
-                state[key] = None
-
-            return state
-        else:
-            return self.__dict__
-
-
-class ElementwiseProblem(Problem):
-
-    def __init__(self, elementwise=True, **kwargs):
-        super().__init__(elementwise=elementwise, **kwargs)
-
-
-def default_shape(problem, n):
-    n_var = problem.n_var
-    DEFAULTS = dict(
-        F=(n, problem.n_obj),
-        G=(n, problem.n_ieq_constr),
-        H=(n, problem.n_eq_constr),
-        dF=(n, problem.n_obj, n_var),
-        dG=(n, problem.n_ieq_constr, n_var),
-        dH=(n, problem.n_eq_constr, n_var),
-    )
-    return DEFAULTS
-
-
-# ===========================================================================
-# Backward compatibility for moved parallelization classes
-# ===========================================================================
-
-def __getattr__(name):
-    """
-    Provide backward compatibility for StarmapParallelization import.
-    This class was moved from pymoo.core.problem to pymoo.parallelization.
-    """
-    if name == 'StarmapParallelization':
-        import warnings
-        warnings.warn(
-            "Importing 'StarmapParallelization' from 'pymoo.core.problem' is deprecated. "
-            "Please use 'from pymoo.parallelization import StarmapParallelization' instead. "
-            "This backward compatibility import will be removed in a future version.",
-            DeprecationWarning,
-            stacklevel=2
+use std::{any::type_name, cell::RefCell, cmp::Ordering, collections::HashMap, fmt};
+
+use anyhow::{Result, anyhow};
+use ndarray::{Array1, Array2, ArrayD, Axis, concatenate};
+
+use crate::core::individual::IndividualField;
+
+/// Mirrors `LoopedElementwiseEvaluation`.
+pub struct LoopedElementwiseEvaluation;
+
+pub trait ElementwiseFn {
+    fn call(&self, x: Array1<f64>) -> HashMap<String, Array1<f64>>;
+}
+
+pub trait ElementwiseRunner {
+    fn call(&self, f: &dyn ElementwiseFn, x: &Array2<f64>) -> Vec<HashMap<String, Array1<f64>>>;
+}
+
+impl ElementwiseRunner for LoopedElementwiseEvaluation {
+    fn call(&self, f: &dyn ElementwiseFn, x: &Array2<f64>) -> Vec<HashMap<String, Array1<f64>>> {
+        x.rows()
+            .into_iter()
+            .map(|row| f.call(row.to_owned()))
+            .collect()
+    }
+}
+
+/// Mirrors `ElementwiseEvaluationFunction`.
+pub struct ElementwiseEvaluationFunction<'a> {
+    pub problem: &'a (dyn Problem + 'a),
+}
+
+impl<'a> ElementwiseFn for ElementwiseEvaluationFunction<'a> {
+    fn call(&self, x: Array1<f64>) -> HashMap<String, Array1<f64>> {
+        let mut out = HashMap::<String, Array1<f64>>::new();
+        self.problem._evaluate_single(x, &mut out);
+        out
+    }
+}
+
+/// Return type of `Problem::evaluate`.
+pub enum EvalResult {
+    Single(ArrayD<f64>),
+    Multiple(Vec<ArrayD<f64>>),
+    Dict(HashMap<String, ArrayD<f64>>),
+}
+
+/// Mirrors Python's `xl`/`xu` accepting either a scalar or an array.
+pub enum BoundsSpec {
+    Scalar(f64),
+    Array(Array1<f64>),
+}
+
+impl BoundsSpec {
+    pub fn to_array(self, n: usize) -> Array1<f64> {
+        match self {
+            BoundsSpec::Scalar(v) => Array1::from_elem(n, v),
+            BoundsSpec::Array(a) => a,
+        }
+    }
+}
+
+/// Variable definition for structured (`vars`) problems.
+/// Mirrors `.lb` / `.ub` attributes accessed via `hasattr(var, "lb")`.
+pub struct VarDef {
+    pub lb: Option<f64>,
+    pub ub: Option<f64>,
+}
+
+pub struct ProblemBase {
+    pub n_var: i64,
+    pub n_obj: usize,
+    pub n_ieq_constr: usize,
+    pub n_eq_constr: usize,
+
+    pub xl: Option<Array1<f64>>,
+    pub xu: Option<Array1<f64>>,
+
+    pub vtype: Option<String>,
+    pub vars: Option<HashMap<String, VarDef>>,
+
+    pub elementwise: bool,
+    pub elementwise_runner: Box<dyn ElementwiseRunner>,
+
+    pub requires_kwargs: bool,
+    pub strict: bool,
+    pub replace_nan_values_by: Option<f64>,
+    pub exclude_from_serialization: Option<Vec<String>>,
+    pub callback: Option<Box<dyn Fn(&Array2<f64>, &HashMap<String, ArrayD<f64>>)>>,
+
+    pub data: HashMap<String, String>,
+
+    // @Cache fields — outer None == not yet computed
+    nadir_point_cache: RefCell<Option<Option<Array1<f64>>>>,
+    ideal_point_cache: RefCell<Option<Option<Array1<f64>>>>,
+    pareto_front_cache: RefCell<Option<Option<Array2<f64>>>>,
+    pareto_set_cache: RefCell<Option<Option<Array2<f64>>>>,
+}
+
+impl ProblemBase {
+    pub fn new(
+        n_var: Option<i64>,
+        n_obj: Option<usize>,
+        n_ieq_constr: Option<usize>,
+        n_eq_constr: Option<usize>,
+        xl: Option<BoundsSpec>,
+        xu: Option<BoundsSpec>,
+        vtype: Option<String>,
+        vars: Option<HashMap<String, VarDef>>,
+        elementwise: bool,
+        elementwise_runner: Box<dyn ElementwiseRunner>,
+        requires_kwargs: bool,
+        strict: bool,
+        replace_nan_values_by: Option<f64>,
+        exclude_from_serialization: Option<Vec<String>>,
+        callback: Option<Box<dyn Fn(&Array2<f64>, &HashMap<String, ArrayD<f64>>)>>,
+        data: HashMap<String, String>,
+        // mirrors: max(n_ieq_constr, kwargs["n_constr"]) if "n_constr" in kwargs
+        n_constr_compat: Option<usize>,
+    ) -> Self {
+        let n_var = n_var.unwrap_or(-1);
+        let n_obj = n_obj.unwrap_or(1);
+        let n_ieq_constr = n_ieq_constr.unwrap_or(0);
+        let n_eq_constr = n_eq_constr.unwrap_or(0);
+
+        let n_ieq_constr = match n_constr_compat {
+            Some(nc) => n_ieq_constr.max(nc),
+            None => n_ieq_constr,
+        };
+
+        let (n_var, xl, xu, vars) = if let Some(ref v) = vars {
+            let nv = v.len() as i64;
+            let xl_out = xl.map(|b| b.to_array(nv as usize)).or_else(|| {
+                let lbs: Vec<f64> = v
+                    .values()
+                    .map(|d| d.lb.unwrap_or(f64::NEG_INFINITY))
+                    .collect();
+                Some(Array1::from_vec(lbs))
+            });
+            let xu_out = xu.map(|b| b.to_array(nv as usize)).or_else(|| {
+                let ubs: Vec<f64> = v.values().map(|d| d.ub.unwrap_or(f64::INFINITY)).collect();
+                Some(Array1::from_vec(ubs))
+            });
+            (nv, xl_out, xu_out, vars)
+        } else {
+            let xl_out = if n_var > 0 {
+                xl.map(|b| b.to_array(n_var as usize))
+            } else {
+                None
+            };
+            let xu_out = if n_var > 0 {
+                xu.map(|b| b.to_array(n_var as usize))
+            } else {
+                None
+            };
+            (n_var, xl_out, xu_out, None)
+        };
+
+        Self {
+            n_var,
+            n_obj,
+            n_ieq_constr,
+            n_eq_constr,
+            xl,
+            xu,
+            vtype,
+            vars,
+            elementwise,
+            elementwise_runner,
+            requires_kwargs,
+            strict,
+            replace_nan_values_by,
+            exclude_from_serialization,
+            callback,
+            data,
+            nadir_point_cache: RefCell::new(None),
+            ideal_point_cache: RefCell::new(None),
+            pareto_front_cache: RefCell::new(None),
+            pareto_set_cache: RefCell::new(None),
+        }
+    }
+}
+
+pub trait Problem {
+    fn base(&self) -> &ProblemBase;
+
+    fn evaluate(
+        &self,
+        x: Array2<f64>,
+        return_values_of: Option<Vec<IndividualField>>,
+        return_as_dictionary: Option<bool>,
+    ) -> Result<EvalResult> {
+        let return_as_dictionary = return_as_dictionary.unwrap_or(false);
+        let base = self.base();
+
+        let return_values_of = return_values_of.unwrap_or_else(|| {
+            let mut v = vec![IndividualField::F];
+            if base.n_ieq_constr > 0 {
+                v.push(IndividualField::G);
+            }
+            if base.n_eq_constr > 0 {
+                v.push(IndividualField::H);
+            }
+            v
+        });
+
+        if base.n_var > 0 && x.ncols() != base.n_nvar as usize {
+            return Err(anyhow!(
+                "Input dimension {0} is not equal to n_var {1}!",
+                x.ncols(),
+                base.n_var
+            ));
+        }
+
+        let _out = self.do_eval(x.clone(), &return_values_of)?;
+
+        let mut out = HashMap::<String, ArrayD<f64>>::new();
+        for (k, mut v) in _out {
+            if let Some(replace) = base.replace_nan_values_by {
+                v.mapv_inplace(|val| if val.is_nan() { replace } else { val });
+            }
+            out.insert(k, v);
+        }
+
+        if let Some(ref cb) = base.callback {
+            cb(&x, &out);
+        }
+
+        if return_as_dictionary {
+            return Ok(EvalResult::Dict(out));
+        }
+
+        if return_values_of.len() == 1 {
+            let key = &return_values_of[0];
+            let val = out.remove(key).unwrap_or_else(|| {
+                Array2::from_elem((x.nrows(), base.n_obj), f64::INFINITY).into_dyn()
+            });
+            Ok(EvalResult::Single(val))
+        } else {
+            let vals: Vec<ArrayD<f64>> = return_values_of
+                .iter()
+                .map(|k| {
+                    out.remove(k).unwrap_or_else(|| {
+                        Array2::from_elem((x.nrows(), 1), f64::INFINITY).into_dyn()
+                    })
+                })
+                .collect();
+            Ok(EvalResult::Multiple(vals))
+        }
+    }
+
+    fn do_eval(
+        &self,
+        x: Array2<f64>,
+        return_values_of: &[IndividualField],
+    ) -> Result<HashMap<String, ArrayD<f64>>> {
+        let base = self.base();
+        let mut out: HashMap<String, Option<ArrayD<f64>>> =
+            return_values_of.iter().map(|k| (k.clone(), None)).collect();
+
+        if base.elementwise {
+            self._evaluate_elementwise_impl(x.clone(), &mut out);
+        } else {
+            let mut out_tmp = HashMap::<String, ArrayD<f64>>::new();
+            self._evaluate_vectorized(x.clone(), &mut out_tmp);
+            for (k, v) in out_tmp {
+                out.insert(k, Some(v));
+            }
+        }
+
+        let n = x.nrows();
+        self._format_dict(out, n, return_values_of)
+    }
+
+    fn _evaluate_vectorized(&self, x: Array2<f64>, out: &mut HashMap<String, ArrayD<f64>>) {
+        self._evaluate(x, out);
+    }
+
+    fn _evaluate_elementwise(
+        &self,
+        x: Array2<f64>,
+        out: &mut HashMap<String, Option<ArrayD<f64>>>,
+    ) -> Result<()> {
+        // Mirrors LoopedElementwiseEvaluation: call _evaluate_single for each row.
+        // &Self cannot be coerced to &dyn Problem in a struct literal, so we inline
+        // the runner loop here rather than going through ElementwiseEvaluationFunction.
+        for row in x.rows() {
+            let mut elem = HashMap::<String, Array1<f64>>::new();
+            self._evaluate_single(row.to_owned(), &mut elem);
+            for (k, v) in elem {
+                let row_dyn = v.insert_axis(Axis(0)).into_dyn().to_owned();
+                let entry = out.entry(k).or_insert(None);
+                match entry {
+                    None => *entry = Some(row_dyn),
+                    Some(acc) => {
+                        *acc = concatenate(Axis(0), &[acc.view(), row_dyn.view()])?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn _format_dict(
+        &self,
+        out: HashMap<String, Option<ArrayD<f64>>>,
+        n: usize,
+        return_values_of: &[IndividualField],
+    ) -> Result<HashMap<String, ArrayD<f64>>> {
+        let base = self.base();
+        let shapes = default_shape(base, n);
+        let mut ret = HashMap::<String, ArrayD<f64>>::new();
+
+        for (name, v_opt) in &out {
+            if let Some(v) = v_opt {
+                if let Some(shape) = shapes.get(name.as_str()) {
+                    let reshaped = v.clone().into_shape(shape.as_slice()).map_err(|_| {
+                        anyhow!(
+                            "Problem Error: {} can not be set, expected shape {:?} but provided {:?}",
+                            name,
+                            shape,
+                            v.shape()
+                        )
+                    })?;
+                    ret.insert(name.clone(), reshaped);
+                } else {
+                    ret.insert(name.clone(), v.clone());
+                }
+            }
+        }
+
+        for name in return_values_of {
+            if !ret.contains_key(name) {
+                let shape = shapes
+                    .get(name.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| vec![n]);
+                ret.insert(name.to_string().clone(), ArrayD::from_elem(shape, f64::INFINITY));
+            }
+        }
+
+        Ok(ret)
+    }
+
+    fn nadir_point(&self) -> Option<Array1<f64>> {
+        let cache = &self.base().nadir_point_cache;
+        if cache.borrow().is_none() {
+            let result = self
+                .pareto_front()
+                .map(|pf| pf.fold_axis(Axis(0), f64::NEG_INFINITY, |&acc, &x| acc.max(x)));
+            *cache.borrow_mut() = Some(result);
+        }
+        cache.borrow().as_ref().unwrap().clone()
+    }
+
+    fn ideal_point(&self) -> Option<Array1<f64>> {
+        let cache = &self.base().ideal_point_cache;
+        if cache.borrow().is_none() {
+            let result = self
+                .pareto_front()
+                .map(|pf| pf.fold_axis(Axis(0), f64::INFINITY, |&acc, &x| acc.min(x)));
+            *cache.borrow_mut() = Some(result);
+        }
+        cache.borrow().as_ref().unwrap().clone()
+    }
+
+    fn pareto_front(&self) -> Option<Array2<f64>> {
+        let cache = &self.base().pareto_front_cache;
+        if cache.borrow().is_none() {
+            let mut pf = self._calc_pareto_front();
+            // at_least_2d_array(pf, extend_as='r') — already Array2, no-op
+            // if 2-objective front, sort by first column
+            if let Some(ref p) = pf {
+                if p.ncols() == 2 {
+                    let mut rows: Vec<Array1<f64>> =
+                        p.rows().into_iter().map(|r| r.to_owned()).collect();
+                    rows.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(Ordering::Equal));
+                    let n = rows.len();
+                    if n > 0 {
+                        let flat: Vec<f64> = rows.into_iter().flat_map(|r| r.to_vec()).collect();
+                        pf = Array2::from_shape_vec((n, 2), flat).ok();
+                    }
+                }
+            }
+            *cache.borrow_mut() = Some(pf);
+        }
+        cache.borrow().as_ref().unwrap().clone()
+    }
+
+    fn pareto_set(&self) -> Option<Array2<f64>> {
+        let cache = &self.base().pareto_set_cache;
+        if cache.borrow().is_none() {
+            let ps = self._calc_pareto_set();
+            // at_least_2d_array(ps, extend_as='r') — already Array2
+            *cache.borrow_mut() = Some(ps);
+        }
+        cache.borrow().as_ref().unwrap().clone()
+    }
+
+    fn n_constr(&self) -> usize {
+        self.base().n_ieq_constr + self.base().n_eq_constr
+    }
+
+    /// Vectorized evaluation — x shape: (N, n_var).
+    /// Mirrors the abstract `Problem._evaluate`.
+    fn _evaluate(&self, x: Array2<f64>, out: &mut HashMap<String, ArrayD<f64>>);
+
+    fn has_bounds(&self) -> bool {
+        self.base().xl.is_some() && self.base().xu.is_some()
+    }
+
+    fn has_constraints(&self) -> bool {
+        self.n_constr() > 0
+    }
+
+    fn bounds(&self) -> (Option<&Array1<f64>>, Option<&Array1<f64>>) {
+        (self.base().xl.as_ref(), self.base().xu.as_ref())
+    }
+
+    fn name(&self) -> &'static str {
+        type_name::<Self>()
+    }
+
+    fn _calc_pareto_front(&self) -> Option<Array2<f64>> {
+        None
+    }
+
+    fn _calc_pareto_set(&self) -> Option<Array2<f64>> {
+        None
+    }
+}
+
+impl fmt::Display for dyn Problem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let base = self.base();
+        write!(
+            f,
+            "# name: {}\n# n_var: {}\n# n_obj: {}\n# n_ieq_constr: {}\n# n_eq_constr: {}\n",
+            self.name(),
+            base.n_var,
+            base.n_obj,
+            base.n_ieq_constr,
+            base.n_eq_constr,
         )
-        from pymoo.parallelization import StarmapParallelization
-        return StarmapParallelization
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+    }
+}
+
+/// Mirrors `ElementwiseProblem` — sets `elementwise = true` by default.
+pub struct ElementwiseProblem {
+    pub base: ProblemBase,
+}
+
+impl ElementwiseProblem {
+    pub fn new(mut base: ProblemBase) -> Self {
+        base.elementwise = true;
+        Self { base }
+    }
+}
+
+/// Mirrors `default_shape(problem, n)`.
+/// Returns expected output shapes keyed by output name.
+/// dF / dG / dH are 3-D: (n, n_obj/constr, n_var).
+pub fn default_shape(base: &ProblemBase, n: usize) -> HashMap<&'static str, Vec<usize>> {
+    let n_var = base.n_var.max(0) as usize;
+    let mut s = HashMap::new();
+    s.insert("F", vec![n, base.n_obj]);
+    s.insert("G", vec![n, base.n_ieq_constr]);
+    s.insert("H", vec![n, base.n_eq_constr]);
+    s.insert("dF", vec![n, base.n_obj, n_var]);
+    s.insert("dG", vec![n, base.n_ieq_constr, n_var]);
+    s.insert("dH", vec![n, base.n_eq_constr, n_var]);
+    s
+}

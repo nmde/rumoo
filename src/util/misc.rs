@@ -1,5 +1,8 @@
 use std::{
-    cmp::Ordering, collections::{HashMap, HashSet}, fmt::Debug, hash::Hash
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+    hash::Hash,
 };
 
 use anyhow::{Result, anyhow};
@@ -10,6 +13,7 @@ use crate::{
     core::{
         individual::{IndividualField, Value},
         population::Population,
+        problem::Problem,
     },
     util::default_random_state,
 };
@@ -96,7 +100,7 @@ pub fn unique_rows(a: &Array2<f64>) -> Result<Array2<f64>> {
         x.iter()
             .zip(y.iter())
             .find_map(|(xi, yi)| xi.partial_cmp(yi).filter(|c| c.is_ne()))
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(Ordering::Equal)
     });
 
     // deduplicate
@@ -159,7 +163,7 @@ pub fn get_duplicates(m: &Array2<f64>) -> Vec<Vec<usize>> {
             .iter()
             .zip(m.row(b).iter())
             .find_map(|(x, y)| x.partial_cmp(y).filter(|c| c.is_ne()))
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(Ordering::Equal)
     });
 
     let rows_equal = |i: usize, j: usize| -> bool {
@@ -604,11 +608,7 @@ pub fn has_feasible(pop: &Population) -> bool {
 pub fn unique_and_all_indices(arr: &Array1<f64>) -> (Array1<f64>, Vec<Vec<usize>>) {
     // sort_indexes = np.argsort(arr)
     let mut sort_indexes: Vec<usize> = (0..arr.len()).collect();
-    sort_indexes.sort_by(|&a, &b| {
-        arr[a]
-            .partial_cmp(&arr[b])
-            .unwrap_or(Ordering::Equal)
-    });
+    sort_indexes.sort_by(|&a, &b| arr[a].partial_cmp(&arr[b]).unwrap_or(Ordering::Equal));
 
     let mut vals: Vec<f64> = Vec::new();
     let mut groups: Vec<Vec<usize>> = Vec::new();

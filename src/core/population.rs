@@ -1,4 +1,7 @@
-use std::ops::{Index, IndexMut};
+use std::{
+    ops::{Index, IndexMut},
+    slice::{Iter, IterMut},
+};
 
 use ndarray::{Array1, Array2};
 
@@ -94,38 +97,42 @@ impl Population {
                 Value::FloatMatrix(out)
             }
             IndividualField::CV => {
-                let cv: Vec<f64> = self.individuals.iter()
-                    .map(|ind| ind.cv()[0])
-                    .collect();
+                let cv: Vec<f64> = self.individuals.iter().map(|ind| ind.cv()[0]).collect();
                 Value::FloatArray(Array1::from_vec(cv))
             }
             IndividualField::Feas => {
-                let feas: Vec<bool> = self.individuals.iter()
-                    .map(|ind| ind.feas()[0])
-                    .collect();
+                let feas: Vec<bool> = self.individuals.iter().map(|ind| ind.feas()[0]).collect();
                 Value::BoolArray(Array1::from_vec(feas))
             }
             _ => {
                 // Generic: collect scalar values from the data store.
                 // Try float first, then int.
-                let raw: Vec<Option<Value>> = self.individuals.iter()
+                let raw: Vec<Option<Value>> = self
+                    .individuals
+                    .iter()
                     .map(|ind| ind.data.get(key).cloned())
                     .collect();
 
-                let as_floats: Option<Vec<f64>> = raw.iter().map(|v| match v {
-                    Some(Value::Float(f)) => Some(*f),
-                    Some(Value::Int(i)) => Some(*i as f64),
-                    _ => None,
-                }).collect();
+                let as_floats: Option<Vec<f64>> = raw
+                    .iter()
+                    .map(|v| match v {
+                        Some(Value::Float(f)) => Some(*f),
+                        Some(Value::Int(i)) => Some(*i as f64),
+                        _ => None,
+                    })
+                    .collect();
 
                 if let Some(fs) = as_floats {
                     return Value::FloatArray(Array1::from_vec(fs));
                 }
 
-                let as_ints: Option<Vec<i64>> = raw.iter().map(|v| match v {
-                    Some(Value::Int(i)) => Some(*i),
-                    _ => None,
-                }).collect();
+                let as_ints: Option<Vec<i64>> = raw
+                    .iter()
+                    .map(|v| match v {
+                        Some(Value::Int(i)) => Some(*i),
+                        _ => None,
+                    })
+                    .collect();
 
                 if let Some(is) = as_ints {
                     return Value::IntArray(Array1::from_vec(is));
@@ -187,11 +194,11 @@ impl Population {
         self.individuals.is_empty()
     }
 
-    pub fn iter(&self) -> std::slice::Iter<Individual> {
+    pub fn iter(&self) -> Iter<Individual> {
         self.individuals.iter()
     }
 
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<Individual> {
+    pub fn iter_mut(&mut self) -> IterMut<Individual> {
         self.individuals.iter_mut()
     }
 
@@ -199,7 +206,8 @@ impl Population {
     /// Mirrors `pop[[0, 2, 5]]` in numpy.
     pub fn select(&self, indices: &[usize]) -> Self {
         Self {
-            individuals: indices.iter()
+            individuals: indices
+                .iter()
                 .map(|&i| self.individuals[i].clone())
                 .collect(),
         }
@@ -210,7 +218,9 @@ impl Population {
     pub fn select_where(&self, mask: &Array1<bool>) -> Self {
         assert_eq!(mask.len(), self.individuals.len());
         Self {
-            individuals: self.individuals.iter()
+            individuals: self
+                .individuals
+                .iter()
                 .zip(mask.iter())
                 .filter_map(|(ind, &keep)| if keep { Some(ind.clone()) } else { None })
                 .collect(),
@@ -246,9 +256,7 @@ pub fn pop_from_array_or_individual(
     let base = base.unwrap_or_else(|| Population::empty(0));
     match input {
         PopulationInput::Pop(p) => Some(p),
-        PopulationInput::Matrix(m) => {
-            Some(base.new_with_attrs(&[("X", Value::FloatMatrix(m))]))
-        }
+        PopulationInput::Matrix(m) => Some(base.new_with_attrs(&[("X", Value::FloatMatrix(m))])),
         PopulationInput::Individual(ind) => {
             let mut pop = Population::empty(1);
             pop[0] = ind;
@@ -289,8 +297,16 @@ impl Default for CvConfig {
         Self {
             cache: true,
             cv_eps: 0.0,
-            cv_ieq: CvConstraintConfig { scale: None, eps: 0.0, pow: None },
-            cv_eq: CvConstraintConfig { scale: None, eps: 1e-4, pow: None },
+            cv_ieq: CvConstraintConfig {
+                scale: None,
+                eps: 0.0,
+                pow: None,
+            },
+            cv_eq: CvConstraintConfig {
+                scale: None,
+                eps: 1e-4,
+                pow: None,
+            },
         }
     }
 }
