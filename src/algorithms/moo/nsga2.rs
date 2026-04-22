@@ -8,19 +8,17 @@ use crate::{
         population::Population, sampling::Sampling, selection::Selection, survival::Survival,
     },
     operators::selection::tournament::{CompareMethod, TournamentSelection, compare},
-    util::misc::has_feasible,
+    util::{display::output::Output, dominator::Dominator, misc::has_feasible},
 };
 
 /*
 from pymoo.algorithms.base.genetic import GeneticAlgorithm
-from pymoo.docs import parse_doc_string
 from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
 from pymoo.operators.survival.rank_and_crowding import RankAndCrowding
 from pymoo.operators.sampling.rnd import FloatRandomSampling
 from pymoo.termination.default import DefaultMultiObjectiveTermination
-from pymoo.util.display.multi import MultiObjectiveOutput
-from pymoo.util.dominator import Dominator
+from pymoo.util.display.multi import MultiObjectiveOutput;
 */
 
 pub fn binary_tournament(
@@ -67,7 +65,10 @@ pub fn binary_tournament(
         // both solutions are feasible
         else {
             if tournament_type == "comp_by_dom_and_crowding" {
-                let rel = Dominator::get_relation(a_f, b_f, None, None);
+                if a_f.is_none() || b_f.is_none() {
+                    return Err(anyhow!("F not found!"));
+                }
+                let rel = Dominator::get_relation(a_f.unwrap(), b_f.unwrap(), None, None);
                 if rel == 1 {
                     s[i] = a as f64;
                 } else if rel == -1 {

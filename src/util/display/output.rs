@@ -1,4 +1,7 @@
-use crate::core::{problem::Problem};
+use crate::{
+    core::{individual::Value, problem::Problem},
+    util::display::column::{Column, center_str, format_text},
+};
 
 /// Displays the current generation number.
 ///
@@ -36,6 +39,14 @@ impl Column for NumberOfGenerations {
 
     fn text(&self) -> String {
         format_text(self.value.map(|v| v.to_string()), self.width, true)
+    }
+
+    fn set(&self, value: Value) -> () {
+        match value {
+            Value::Int(i) => self.value = Some(i as usize),
+            Value::Float(f) => self.value = Some(f as usize),
+            _ => return,
+        };
     }
 }
 
@@ -76,23 +87,31 @@ impl Column for NumberOfEvaluations {
     fn text(&self) -> String {
         format_text(self.value.map(|v| v.to_string()), self.width, true)
     }
+
+    fn set(&self, value: Value) -> () {
+        match value {
+            Value::Int(i) => self.value = Some(i as usize),
+            Value::Float(f) => self.value = Some(f as usize),
+            _ => return,
+        };
+    }
 }
 
 /// Base output display: renders a table of columns after each generation.
 ///
 /// Mirrors `pymoo.util.display.output.Output(Callback)`.
-pub struct Output {
+pub struct OutputBase {
     pub columns: Vec<Box<dyn Column>>,
 }
 
-impl Output {
+impl OutputBase {
     /// Mirrors `Output.__init__()` — creates with the two default columns.
     pub fn new() -> Self {
         Self {
-            columns: vec![
+            columns: Vec::<Box<dyn Column>>::from([
                 Box::new(NumberOfGenerations::new(6)),
                 Box::new(NumberOfEvaluations::new(8)),
-            ],
+            ]),
         }
     }
 
