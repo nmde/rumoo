@@ -38,7 +38,7 @@ pub trait Selection: Operator {
         random_state: Option<&mut StdRng>,
     ) -> SelectionResult {
         let to_pop = to_pop.unwrap_or(true);
-        let ret = self._do_selection(problem, pop, n_select, n_parents, random_state);
+        let ret = self._do_selection(problem, pop, n_select, n_parents, None, random_state);
 
         // if some selections return indices they are used to create the individual list
         if to_pop {
@@ -59,6 +59,7 @@ pub trait Selection: Operator {
         pop: &Population,
         n_select: usize,
         n_parents: usize,
+        to_pop: Option<bool>,
         random_state: Option<&mut StdRng>,
     ) -> SelectionResult;
 }

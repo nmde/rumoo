@@ -1,38 +1,91 @@
-class Callback:
+use std::collections::HashMap;
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.data = {}
-        self.is_initialized = False
+use crate::core::individual::Value;
 
-    def initialize(self, algorithm):
-        pass
+/// Instance data for a `Callback`.
+///
+/// Mirrors the `self.data` and `self.is_initialized` fields of
+/// `pymoo.core.callback.Callback.__init__`.
+pub struct CallbackBase {
+    pub data: HashMap<String, Value>,
+    pub is_initialized: bool,
+}
 
-    def notify(self, algorithm):
-        pass
+impl CallbackBase {
+    pub fn new() -> Self {
+        Self {
+            data: HashMap::new(),
+            is_initialized: false,
+        }
+    }
+}
 
-    def update(self, algorithm):
-        return self._update(algorithm)
+/// Lifecycle hook invoked after each generation.
+///
+/// Mirrors `pymoo.core.callback.Callback`.
+pub trait Callback {
+    fn base(&self) -> &CallbackBase;
+    fn base_mut(&mut self) -> &mut CallbackBase;
 
-    def _update(self, algorithm):
-        pass
+    /// Mirrors `Callback.initialize(algorithm)` — called once before the first
+    /// `notify`/`update`.
+    fn initialize(&mut self, _algorithm: &dyn Algorithm) {}
 
-    def __call__(self, algorithm):
+    /// Mirrors `Callback.notify(algorithm)`.
+    fn notify(&mut self, _algorithm: &dyn Algorithm) {}
 
-        if not self.is_initialized:
-            self.initialize(algorithm)
-            self.is_initialized = True
+    /// Mirrors `Callback.update(algorithm)` → delegates to `_update`.
+    fn update(&mut self, algorithm: &dyn Algorithm) {
+        self._update(algorithm);
+    }
 
-        self.notify(algorithm)
-        self.update(algorithm)
+    /// Mirrors `Callback._update(algorithm)` — override in concrete types.
+    fn _update(&mut self, _algorithm: &dyn Algorithm) {}
 
+    /// Mirrors `Callback.__call__(algorithm)`:
+    /// initializes once, then calls `notify` and `update`.
+    fn call(&mut self, algorithm: &dyn Algorithm) {
+        if !self.base().is_initialized {
+            self.initialize(algorithm);
+            self.base_mut().is_initialized = true;
+        }
+        self.notify(algorithm);
+        self.update(algorithm);
+    }
+}
 
-class CallbackCollection(Callback):
+/// A ordered collection of callbacks, each forwarded the same algorithm state.
+///
+/// Mirrors `pymoo.core.callback.CallbackCollection(Callback)`.
+pub struct CallbackCollection {
+    pub base: CallbackBase,
+    pub callbacks: Vec<Box<dyn Callback>>,
+}
 
-    def __init__(self, *args) -> None:
-        super().__init__()
-        self.callbacks = args
+impl CallbackCollection {
+    /// Mirrors `CallbackCollection.__init__(*args)`.
+    pub fn new(callbacks: Vec<Box<dyn Callback>>) -> Self {
+        Self {
+            base: CallbackBase::new(),
+            callbacks,
+        }
+    }
+}
 
-    def update(self, algorithm):
-        [callback.update(algorithm) for callback in self.callbacks]
+impl Callback for CallbackCollection {
+    fn base(&self) -> &CallbackBase {
+        &self.base
+    }
 
+    fn base_mut(&mut self) -> &mut CallbackBase {
+        &mut self.base
+    }
+
+    /// Mirrors `CallbackCollection.update(algorithm)`:
+    /// `[callback.update(algorithm) for callback in self.callbacks]`.
+    fn update(&mut self, algorithm: &dyn Algorithm) {
+        for callback in self.callbacks.iter_mut() {
+            callback.update(algorithm);
+        }
+    }
+}

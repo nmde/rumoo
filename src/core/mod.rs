@@ -1,3 +1,4 @@
+pub mod callback;
 pub mod crossover;
 pub mod individual;
 pub mod mutation;

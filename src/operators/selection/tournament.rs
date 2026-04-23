@@ -3,14 +3,16 @@ use ndarray::{Array2, s};
 use rand::{rngs::StdRng, seq::IndexedRandom};
 
 use crate::{
-    core::{population::Population, problem::Problem},
+    core::{
+        population::Population,
+        problem::Problem,
+        selection::{Selection, SelectionResult},
+    },
     util::{default_random_state, misc::random_permutations},
 };
 
 /*
-from pymoo.core.selection import Selection
 from pymoo.util.misc import random_permutations
-from pymoo.util import default_random_state
 */
 
 /// The comparison function stored by `TournamentSelection`.
@@ -92,15 +94,16 @@ impl TournamentSelection {
 }
 
 impl Selection for TournamentSelection {
-    fn do_selection(
+    fn _do_selection(
         &self,
         problem: &dyn Problem,
         pop: &Population,
         n_select: usize,
         n_parents: usize,
-        to_pop: bool,
+        to_pop: Option<bool>,
         random_state: Option<&mut StdRng>,
     ) -> SelectionResult {
+        let to_pop = to_pop.unwrap_or(true);
         let indices = self.do_select(pop, n_select, n_parents, random_state);
 
         // if some selections return indices they are used to create the individual list

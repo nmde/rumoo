@@ -1,5 +1,5 @@
 use crate::{
-    core::{individual::Value, problem::Problem},
+    core::{callback::{Callback, CallbackBase}, individual::Value, problem::Problem},
     util::display::column::{Column, center_str, format_text},
 };
 
@@ -101,6 +101,7 @@ impl Column for NumberOfEvaluations {
 ///
 /// Mirrors `pymoo.util.display.output.Output(Callback)`.
 pub struct OutputBase {
+    callback: CallbackBase,
     pub columns: Vec<Box<dyn Column>>,
 }
 
@@ -155,7 +156,15 @@ impl OutputBase {
     }
 }
 
-impl Callback for Output {
+impl Callback for OutputBase {
+    fn base(&self) -> &CallbackBase {
+        &self.callback
+    }
+
+    fn base_mut(&mut self) -> &mut CallbackBase {
+        &mut self.callback
+    }
+
     fn update(&mut self, algorithm: &dyn Algorithm) {
         for col in self.columns.iter_mut() {
             col.update(algorithm);
