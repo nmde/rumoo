@@ -1,3 +1,4 @@
+pub mod algorithm;
 pub mod callback;
 pub mod crossover;
 pub mod individual;

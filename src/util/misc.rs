@@ -11,6 +11,7 @@ use rand::{rngs::StdRng, seq::SliceRandom};
 
 use crate::{
     core::{
+        algorithm::Algorithm,
         individual::{IndividualField, Value},
         population::Population,
         problem::Problem,

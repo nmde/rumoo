@@ -1,408 +1,474 @@
-import copy
-import time
-
-import numpy as np
-
-from pymoo.core.callback import Callback
-from pymoo.core.evaluator import Evaluator
-from pymoo.core.meta import Meta
-from pymoo.core.population import Population
-from pymoo.core.result import Result
-from pymoo.functions import FunctionLoader
-from pymoo.termination.default import DefaultMultiObjectiveTermination, DefaultSingleObjectiveTermination
-from pymoo.util.display.display import Display
-from pymoo.util.misc import termination_from_tuple
-from pymoo.util.optimum import filter_optimum
-
-
-class Algorithm:
-
-    def __init__(self,
-                 termination=None,
-                 output=None,
-                 display=None,
-                 callback=None,
-                 archive=None,
-                 return_least_infeasible=False,
-                 save_history=False,
-                 verbose=False,
-                 seed=None,
-                 evaluator=None,
-                 **kwargs):
-
-        super().__init__()
-
-        # prints the compile warning if enabled
-        FunctionLoader.get_instance()
-
-        # the problem to be solved (will be set later on)
-        self.problem = None
-
-        # the termination criterion to be used by the algorithm - might be specific for an algorithm
-        self.termination = termination
-
-        # the text that should be printed during the algorithm run
-        self.output = output
-
-        # an archive kept during algorithm execution (not always the same as optimum)
-        self.archive = archive
-
-        # the form of display shown during algorithm execution
-        self.display = display
-
-        # callback to be executed each generation
-        if callback is None:
-            callback = Callback()
-        self.callback = callback
-
-        # whether the algorithm should finally return the least infeasible solution if no feasible found
-        self.return_least_infeasible = return_least_infeasible
-
-        # whether the history should be saved or not
-        self.save_history = save_history
-
-        # whether the algorithm should print output in this run or not
-        self.verbose = verbose
-
-        # the random seed that was used
-        self.seed = seed
-        self.random_state = None
-
-        # the function evaluator object (can be used to inject code)
-        if evaluator is None:
-            evaluator = Evaluator()
-        self.evaluator = evaluator
-
-        # the history object which contains the list
-        self.history = list()
-
-        # the current solutions stored - here considered as population
-        self.pop = None
-
-        # a placeholder object for implementation to store solutions in each iteration
-        self.off = None
-
-        # the optimum found by the algorithm
-        self.opt = None
-
-        # the current number of generation or iteration
-        self.n_iter = None
-
-        # can be used to store additional data in submodules
-        self.data = {}
-
-        # if the initialized method has been called before or not
-        self.is_initialized = False
-
-        # the time when the algorithm has been setup for the first time
-        self.start_time = None
-
-    def setup(self, problem, verbose=False, progress=False, **kwargs):
-
-        # the problem to be solved by the algorithm
-        self.problem = problem
-
-        # clone the output object if it exists to avoid state pollution between runs
-        if self.output is not None:
-            self.output = copy.deepcopy(self.output)
-
-        # set all the provided options to this method
-        for key, value in kwargs.items():
-            self.__dict__[key] = value
-
-        # set random state
-        self.random_state = np.random.default_rng(self.seed)
-
-        # make sure that some type of termination criterion is set
-        if self.termination is None:
-            self.termination = default_termination(problem)
-        else:
-            self.termination = termination_from_tuple(self.termination)
-
-        # set up the display during the algorithm execution
-        if self.display is None:
-            self.display = Display(self.output, verbose=verbose, progress=progress)
-
-        # finally call the function that can be overwritten by the actual algorithm
-        self._setup(problem, **kwargs)
-
-        return self
-
-    def run(self):
-        while self.has_next():
-            self.next()
-        return self.result()
-
-    def has_next(self):
-        return not self.termination.has_terminated()
-
-    def finalize(self):
-
-        # finalize the display output in the end of the run
-        self.display.finalize()
-
-        return self._finalize()
-
-    def next(self):
-
-        # get the infill solutions
-        infills = self.infill()
-
-        # call the advance with them after evaluation
-        if infills is not None:
-            self.evaluator.eval(self.problem, infills, algorithm=self)
-            self.advance(infills=infills)
-
-        # if the algorithm does not follow the infill-advance scheme just call advance
-        else:
-            self.advance()
-
-    def _initialize(self):
-
-        # the time starts whenever this method is called
-        self.start_time = time.time()
-
-        # set the attribute for the optimization method to start
-        self.n_iter = 1
-        self.pop = Population.empty()
-        self.opt = None
-
-    def infill(self):
-        if self.problem is None:
-            raise Exception("Please call `setup(problem)` before calling next().")
-
-        # the first time next is called simply initial the algorithm - makes the interface cleaner
-        if not self.is_initialized:
-
-            # hook mostly used by the class to happen before even to initialize
-            self._initialize()
-
-            # execute the initialization infill of the algorithm
-            infills = self._initialize_infill()
-
-        else:
-            # request the infill solutions if the algorithm has implemented it
-            infills = self._infill()
-
-        # set the current generation to the offsprings
-        if infills is not None:
-            infills.set("n_gen", self.n_iter)
-            infills.set("n_iter", self.n_iter)
-
-        return infills
-
-    def advance(self, infills=None, **kwargs):
-
-        # if infills have been provided set them as offsprings and feed them into advance
-        self.off = infills
-
-        # if the algorithm has not been already initialized
-        if not self.is_initialized:
-
-            # set the generation counter to 1
-            self.n_iter = 1
-
-            # assign the population to the algorithm
-            self.pop = infills
-
-            # do what is necessary after the initialization
-            self._initialize_advance(infills=infills, **kwargs)
-
-            # set this algorithm to be initialized
-            self.is_initialized = True
-
-            # always advance to the next iteration after initialization
-            self._post_advance()
-
-        else:
-
-            # call the implementation of the advance method - if the infill is not None
-            val = self._advance(infills=infills, **kwargs)
-
-            # always advance to the next iteration - except if the algorithm returns False
-            if val is None or val:
-                self._post_advance()
-
-        # if the algorithm has terminated, then do the finalization steps and return the result
-        if self.termination.has_terminated():
-            self.finalize()
-            ret = self.result()
-
-        # otherwise just increase the iteration counter for the next step and return the current optimum
-        else:
-            ret = self.opt
-
-        # add the infill solutions to an archive
-        if self.archive is not None and infills is not None:
-            self.archive = self.archive.add(infills)
-
-        return ret
-
-    def result(self):
-        res = Result()
-
-        # store the time when the algorithm as finished
-        res.start_time = self.start_time
-        res.end_time = time.time()
-        res.exec_time = res.end_time - res.start_time
-
-        res.pop = self.pop
-        res.archive = self.archive
-        res.data = self.data
-
-        # get the optimal solution found
-        opt = self.opt
-        if opt is None or len(opt) == 0:
-            opt = None
-
-        # if no feasible solution has been found
-        elif not np.any(opt.get("FEAS")):
-            if self.return_least_infeasible:
-                opt = filter_optimum(opt, least_infeasible=True)
-            else:
-                opt = None
-        res.opt = opt
-
-        # if optimum is set to none to not report anything
-        if res.opt is None:
-            X, F, CV, G, H = None, None, None, None, None
-
-        # otherwise get the values from the population
-        else:
-            X, F, CV, G, H = self.opt.get("X", "F", "CV", "G", "H")
-
-            # if single-objective problem and only one solution was found - create a 1d array
-            if self.problem.n_obj == 1 and len(X) == 1:
-                X, F, CV, G, H = X[0], F[0], CV[0], G[0], H[0]
-
-        # set all the individual values
-        res.X, res.F, res.CV, res.G, res.H = X, F, CV, G, H
-
-        # create the result object
-        res.problem = self.problem
-        res.history = self.history
-
-        return res
-
-    def ask(self):
-        return self.infill()
-
-    def tell(self, *args, **kwargs):
-        return self.advance(*args, **kwargs)
-
-    def _set_optimum(self):
-        self.opt = filter_optimum(self.pop, least_infeasible=True)
-
-    def _post_advance(self):
-
-        # update the current optimum of the algorithm
-        self._set_optimum()
-
-        # update the current termination condition of the algorithm
-        self.termination.update(self)
-
-        # display the output if defined by the algorithm
-        self.display(self)
-
-        if self.save_history:
-            _hist, _callback, _display = self.history, self.callback, self.display
-
-            self.history, self.callback, self.display = None, None, None
-            obj = copy.deepcopy(self)
-
-            self.history, self.callback, self.display = _hist, _callback, _display
-            self.history.append(obj)
-
-        # if a callback function is provided it is called after each iteration
-        self.callback(self)
-
-        self.n_iter += 1
-
-    # =========================================================================================================
-    # TO BE OVERWRITTEN
-    # =========================================================================================================
-
-    def _setup(self, problem, **kwargs):
-        pass
-
-    def _initialize_infill(self):
-        pass
-
-    def _initialize_advance(self, infills=None, **kwargs):
-        pass
-
-    def _infill(self):
-        pass
-
-    def _advance(self, infills=None, **kwargs):
-        pass
-
-    def _finalize(self):
-        pass
-
-    # =========================================================================================================
-    # CONVENIENCE
-    # =========================================================================================================
-
-    @property
-    def n_gen(self):
-        return self.n_iter
-
-    @n_gen.setter
-    def n_gen(self, value):
-        self.n_iter = value
-
-
-class LoopwiseAlgorithm(Algorithm):
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.generator = None
-        self.state = None
-
-    def _next(self):
-        pass
-
-    def _infill(self):
-        if self.state is None:
-            self._advance()
-        return self.state
-
-    def _advance(self, infills=None, **kwargs):
-        if self.generator is None:
-            self.generator = self._next()
-        try:
-            self.state = self.generator.send(infills)
-        except StopIteration:
-            self.generator = None
-            self.state = None
-            return True
-
-        return False
-
-
-def default_termination(problem):
-    if problem.n_obj > 1:
-        termination = DefaultMultiObjectiveTermination()
-    else:
-        termination = DefaultSingleObjectiveTermination()
-    return termination
-
-
-class MetaAlgorithm(Meta):
-    """
-    An algorithm wrapper that combines Algorithm's functionality with Meta's delegation behavior.
-    Uses Meta to provide transparent proxying with the ability to override specific methods.
-    """
-
-    def __init__(self, algorithm, copy=True, **kwargs):
-        # If the algorithm is already a Meta object, don't copy to avoid deepcopy issues with nested proxies
-        if isinstance(algorithm, Meta):
-            copy = False
-            
-        # Initialize Meta
-        super().__init__(algorithm, copy=copy)
-        
-        # Pass any additional kwargs to the wrapped algorithm if needed
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+use std::{
+    collections::HashMap,
+    time::{Instant, SystemTime},
+};
+
+use anyhow::{Result, anyhow};
+use rand::{SeedableRng, rngs::StdRng};
+
+use crate::{
+    core::{
+        callback::{Callback, CallbackCollection},
+        individual::{IndividualField, Value},
+        population::Population,
+        problem::Problem,
+    },
+    util::display::output::Output,
+};
+
+/// Instance state shared by all `Algorithm` implementations.
+///
+/// Mirrors the instance attributes of `pymoo.core.algorithm.Algorithm.__init__`.
+pub struct AlgorithmBase {
+    pub problem: Option<Box<dyn Problem>>,
+    pub termination: Option<Box<dyn Termination>>,
+    pub output: Option<Box<dyn Output>>,
+    pub archive: Option<Population>,
+    pub display: Option<Box<dyn Display>>,
+    pub callback: Box<dyn Callback>,
+    pub return_least_infeasible: bool,
+    pub save_history: bool,
+    pub verbose: bool,
+    pub seed: Option<u64>,
+    pub random_state: Option<StdRng>,
+    pub evaluator: Box<dyn Evaluator>,
+    pub history: Vec<Box<dyn Any + Send + Sync>>,
+    pub pop: Option<Population>,
+    pub off: Option<Population>,
+    pub opt: Option<Population>,
+    pub n_iter: Option<usize>,
+    pub data: HashMap<String, Value>,
+    pub is_initialized: bool,
+    pub start_time: Option<Instant>,
+}
+
+impl AlgorithmBase {
+    /// Mirrors `Algorithm.__init__` defaults.
+    pub fn new(
+        termination: Option<Box<dyn Termination>>,
+        output: Option<Box<dyn Output>>,
+        display: Option<Box<dyn Display>>,
+        callback: Option<Box<dyn Callback>>,
+        archive: Option<Population>,
+        return_least_infeasible: Option<bool>,
+        save_history: Option<bool>,
+        verbose: Option<bool>,
+        seed: Option<u64>,
+        evaluator: Option<Box<dyn Evaluator>>,
+    ) -> Self {
+        Self {
+            problem: None,
+            termination,
+            output,
+            archive,
+            display,
+            callback: callback.unwrap_or(Box::new(CallbackCollection::new(vec![]))),
+            return_least_infeasible: return_least_infeasible.unwrap_or(false),
+            save_history: save_history.unwrap_or(false),
+            verbose: verbose.unwrap_or(false),
+            seed,
+            random_state: None,
+            evaluator: evaluator.unwrap_or(Box::new(Evaluator::new())),
+            history: Vec::new(),
+            pop: None,
+            off: None,
+            opt: None,
+            n_iter: None,
+            data: HashMap::new(),
+            is_initialized: false,
+            start_time: None,
+        }
+    }
+}
+
+/// Base trait for all optimization algorithms.
+///
+/// Mirrors `pymoo.core.algorithm.Algorithm`.
+pub trait Algorithm {
+    fn base(&self) -> &AlgorithmBase;
+    fn base_mut(&mut self) -> &mut AlgorithmBase;
+
+    /// Mirrors `Algorithm.setup(problem, verbose, progress, **kwargs)`.
+    fn setup(&mut self, problem: Box<dyn Problem>, verbose: Option<bool>, progress: Option<bool>) {
+        let verbose = verbose.unwrap_or(false);
+        let progress = progress.unwrap_or(false);
+
+        self.base_mut().problem = Some(problem);
+
+        let seed = self.base().seed;
+        self.base_mut().random_state = Some(match seed {
+            Some(s) => StdRng::seed_from_u64(s),
+            None => StdRng::from_entropy(),
+        });
+
+        if self.base().termination.is_none() {
+            let n_obj = self.base().problem.as_ref().map_or(0, |p| p.n_obj());
+            self.base_mut().termination = Some(default_termination(n_obj));
+        } else {
+            let term = self
+                .base_mut()
+                .termination
+                .take()
+                .map(termination_from_tuple);
+            self.base_mut().termination = term;
+        }
+
+        if self.base().display.is_none() {
+            let output = self.base_mut().output.take();
+            self.base_mut().display = Some(Box::new(Display::new(output, verbose, progress)));
+        }
+
+        self._setup();
+    }
+
+    /// Mirrors `Algorithm.run()`.
+    fn run(&mut self) -> Result<AlgorithmResult> {
+        while self.has_next() {
+            self.next()?;
+        }
+        self.result()
+    }
+
+    /// Mirrors `Algorithm.has_next()`.
+    fn has_next(&self) -> bool {
+        self.base()
+            .termination
+            .as_ref()
+            .map_or(false, |t| !t.has_terminated())
+    }
+
+    /// Mirrors `Algorithm.finalize()`.
+    fn finalize(&mut self) {
+        let mut display = self.base_mut().display.take();
+        if let Some(ref mut d) = display {
+            d.finalize();
+        }
+        self.base_mut().display = display;
+        self._finalize();
+    }
+
+    /// Mirrors `Algorithm.next()`.
+    fn next(&mut self) -> Result<()> {
+        let infills = self.infill()?;
+        if let Some(mut infills) = infills {
+            // Take the evaluator out so we can pass `&mut self` to eval() while
+            // the problem pointer is held as a raw pointer to avoid a double-borrow.
+            let mut evaluator = self.base_mut().evaluator.take();
+            let prob = self
+                .base()
+                .problem
+                .as_ref()
+                .map(|p| p.as_ref() as *const dyn Problem);
+            if let Some(prob_ptr) = prob {
+                evaluator.eval(
+                    unsafe { &*prob_ptr },
+                    &mut infills,
+                    self as &mut dyn Algorithm,
+                );
+            }
+            self.base_mut().evaluator = evaluator;
+            self.advance(Some(infills));
+        } else {
+            self.advance(None);
+        }
+        Ok(())
+    }
+
+    /// Mirrors `Algorithm._initialize()`.
+    fn _initialize(&mut self) {
+        self.base_mut().start_time = Some(Instant::now());
+        self.base_mut().n_iter = Some(1);
+        self.base_mut().pop = Some(Population::empty(0));
+        self.base_mut().opt = None;
+    }
+
+    /// Mirrors `Algorithm.infill()`.
+    fn infill(&mut self) -> Result<Option<Population>> {
+        if self.base().problem.is_none() {
+            return Err(anyhow!(
+                "Please call `setup(problem)` before calling next()."
+            ));
+        }
+
+        let mut infills = if !self.base().is_initialized {
+            self._initialize();
+            self._initialize_infill()
+        } else {
+            self._infill()
+        };
+
+        if let Some(ref mut pop) = infills {
+            let n_iter = self.base().n_iter.unwrap_or(1);
+            pop.set(
+                &IndividualField::DataField("n_gen".to_string()),
+                Value::Int(n_iter as i64),
+            );
+            pop.set(
+                &IndividualField::DataField("n_iter".to_string()),
+                Value::Int(n_iter as i64),
+            );
+        }
+
+        Ok(infills)
+    }
+
+    /// Mirrors `Algorithm.advance(infills, **kwargs)`.
+    fn advance(&mut self, infills: Option<Population>) -> Option<Population> {
+        self.base_mut().off = infills.clone();
+
+        if !self.base().is_initialized {
+            self.base_mut().n_iter = Some(1);
+            self.base_mut().pop = infills.clone();
+            self._initialize_advance(infills.as_ref());
+            self.base_mut().is_initialized = true;
+            self._post_advance();
+        } else {
+            let should_advance = self._advance(infills.as_ref()).unwrap_or(true);
+            if should_advance {
+                self._post_advance();
+            }
+        }
+
+        let terminated = self
+            .base()
+            .termination
+            .as_ref()
+            .map_or(false, |t| t.has_terminated());
+
+        let ret = if terminated {
+            self.finalize();
+            self.result().opt
+        } else {
+            self.base().opt.clone()
+        };
+
+        // Mirrors: if self.archive is not None and infills is not None:
+        //              self.archive = self.archive.add(infills)
+        let off = self.base().off.clone();
+        if let Some(ref inf) = off {
+            if let Some(ref mut arch) = self.base_mut().archive {
+                arch.add(inf);
+            }
+        }
+
+        ret
+    }
+
+    /// Mirrors `Algorithm.result()`.
+    fn result(&self) -> AlgorithmResult {
+        let mut res = AlgorithmResult::new();
+
+        res.start_time = self.base().start_time;
+        res.end_time = SystemTime::now();
+        res.exec_time = res.end_time - res.start_time;
+
+        res.pop = self.base().pop.clone();
+        res.archive = self.base().archive.clone();
+        res.data = self.base().data.clone();
+
+        // Mirrors: opt = self.opt; handle None / empty / infeasible cases.
+        let opt = match self.base().opt.clone() {
+            None => None,
+            Some(ref o) if o.is_empty() => None,
+            Some(ref o) if !o.any_feasible() => {
+                if self.base().return_least_infeasible {
+                    self.base().opt.as_ref().map(|o| filter_optimum(o, true))
+                } else {
+                    None
+                }
+            }
+            Some(o) => Some(o),
+        };
+        res.opt = opt;
+
+        // Mirrors: X, F, CV, G, H = self.opt.get("X", "F", "CV", "G", "H")
+        if let Some(ref opt_pop) = opt {
+            res.X = opt_pop.get(&IndividualField::X);
+            res.F = opt_pop.get(&IndividualField::F);
+            res.CV = opt_pop.get(&IndividualField::CV);
+            res.G = opt_pop.get(&IndividualField::G);
+            res.H = opt_pop.get(&IndividualField::H);
+            // Mirrors: if n_obj == 1 and len(X) == 1: X, F, … = X[0], F[0], …
+            // Concrete result types should squeeze single-solution single-objective
+            // arrays to 1-D as needed.
+        }
+
+        res.problem = self.base().problem;
+        res.history = self.base().history;
+
+        res
+    }
+
+    /// Mirrors `Algorithm.ask()`.
+    fn ask(&mut self) -> Result<Option<Population>> {
+        self.infill()
+    }
+
+    /// Mirrors `Algorithm.tell(*args, **kwargs)`.
+    fn tell(&mut self, infills: Option<Population>) -> Option<Population> {
+        self.advance(infills)
+    }
+
+    /// Mirrors `Algorithm._set_optimum()`.
+    fn _set_optimum(&mut self) {
+        let pop = self.base().pop.clone();
+        if let Some(ref p) = pop {
+            self.base_mut().opt = Some(filter_optimum(p, true));
+        }
+    }
+
+    /// Mirrors `Algorithm._post_advance()`.
+    fn _post_advance(&mut self) {
+        self._set_optimum();
+
+        // termination.update(self)
+        let mut term = self.base_mut().termination.take();
+        if let Some(ref mut t) = term {
+            t.update(self as &mut dyn Algorithm);
+        }
+        self.base_mut().termination = term;
+
+        // display(self)
+        let mut display = self.base_mut().display.take();
+        if let Some(ref mut d) = display {
+            d.call(self as &dyn Algorithm);
+        }
+        self.base_mut().display = display;
+
+        self.base_mut().callback.call(self as &mut dyn Algorithm);
+
+        self.base_mut().n_iter += 1;
+    }
+
+    fn _setup(&mut self) {}
+    fn _initialize_infill(&mut self) -> Option<Population> {
+        None
+    }
+    fn _initialize_advance(&mut self, _infills: Option<&Population>) {}
+    fn _infill(&mut self) -> Option<Population> {
+        None
+    }
+    fn _advance(&mut self, _infills: Option<&Population>) -> Option<bool> {
+        None
+    }
+    fn _finalize(&mut self) {}
+
+    /// Mirrors `Algorithm.n_gen` property getter (alias for `n_iter`).
+    fn n_gen(&self) -> usize {
+        self.base().n_iter.unwrap_or(0)
+    }
+
+    /// Mirrors `Algorithm.n_gen` property setter.
+    fn set_n_gen(&mut self, value: usize) {
+        self.base_mut().n_iter = Some(value);
+    }
+}
+
+/// State fields for loop-wise algorithms.
+///
+/// Mirrors `pymoo.core.algorithm.LoopwiseAlgorithm` instance attributes.
+pub struct LoopwiseBase {
+    pub base: AlgorithmBase,
+    /// Mirrors `LoopwiseAlgorithm.state` — the infill population currently
+    /// waiting to be evaluated, or `None` when no step is in progress.
+    pub state: Option<Population>,
+}
+
+impl LoopwiseBase {
+    pub fn new() -> Self {
+        Self {
+            base: AlgorithmBase::new(None, None, None, None, None, None, None, None, None, None),
+            state: None,
+        }
+    }
+}
+
+/// Extension trait for generator-style algorithms.
+///
+/// Mirrors `pymoo.core.algorithm.LoopwiseAlgorithm(Algorithm)`.
+///
+/// Python uses coroutine generators (`yield` / `generator.send(value)`) to
+/// interleave infill requests with evaluations.  In Rust that pattern is
+/// replaced by an explicit `state` field and a `_next` method that either
+/// populates `state` with the next infill request or sets it to `None` when
+/// the loop is exhausted (mirrors `StopIteration`).
+///
+/// Concrete implementations should wire `Algorithm::_infill` and
+/// `Algorithm::_advance` to the helpers below:
+///
+/// ```rust
+/// fn _infill(&mut self) -> Option<Population> { self._infill_lw() }
+/// fn _advance(&mut self, infills: Option<&Population>) -> Option<bool> {
+///     self._advance_lw(infills.cloned())
+/// }
+/// ```
+pub trait LoopwiseAlgorithm: Algorithm {
+    fn lw_base(&self) -> &LoopwiseBase;
+    fn lw_base_mut(&mut self) -> &mut LoopwiseBase;
+
+    /// Mirrors `LoopwiseAlgorithm._next()` generator.
+    ///
+    /// Drive one step of the inner loop.  When `infills` is `None` the loop
+    /// starts (or restarts); when it carries a `Population` the step continues
+    /// after evaluation.  Implementors should set
+    /// `self.lw_base_mut().state = Some(next_infills)` to yield a request, or
+    /// `None` to signal completion.
+    fn _next(&mut self, infills: Option<Population>);
+
+    /// Helper for `Algorithm::_infill` — mirrors `LoopwiseAlgorithm._infill`.
+    fn _infill_lw(&mut self) -> Option<Population> {
+        if self.lw_base().state.is_none() {
+            self._next(None);
+        }
+        self.lw_base().state.clone()
+    }
+
+    /// Helper for `Algorithm::_advance` — mirrors `LoopwiseAlgorithm._advance`.
+    fn _advance_lw(&mut self, infills: Option<Population>) -> Option<bool> {
+        self._next(infills);
+        if self.lw_base().state.is_none() {
+            Some(true) // loop exhausted — mirrors StopIteration returning True
+        } else {
+            Some(false)
+        }
+    }
+}
+
+/// Selects the default termination criterion based on the number of objectives.
+///
+/// Mirrors `pymoo.core.algorithm.default_termination(problem)`.
+pub fn default_termination(n_obj: usize) -> Box<dyn Termination> {
+    if n_obj > 1 {
+        Box::new(DefaultMultiObjectiveTermination::new())
+    } else {
+        Box::new(DefaultSingleObjectiveTermination::new())
+    }
+}
+
+/// A transparent algorithm wrapper that delegates all calls to an inner algorithm.
+///
+/// Mirrors `pymoo.core.algorithm.MetaAlgorithm(Meta)`.
+pub struct MetaAlgorithm {
+    pub inner: Box<dyn Algorithm>,
+    pub extra: HashMap<String, Value>,
+}
+
+impl MetaAlgorithm {
+    /// Mirrors `MetaAlgorithm.__init__(algorithm, copy=True, **kwargs)`.
+    pub fn new(algorithm: Box<dyn Algorithm>) -> Self {
+        Self {
+            inner: algorithm,
+            extra: HashMap::new(),
+        }
+    }
+}
+
+impl Algorithm for MetaAlgorithm {
+    fn base(&self) -> &AlgorithmBase {
+        self.inner.base()
+    }
+
+    fn base_mut(&mut self) -> &mut AlgorithmBase {
+        self.inner.base_mut()
+    }
+}

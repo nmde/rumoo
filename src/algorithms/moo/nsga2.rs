@@ -98,7 +98,7 @@ pub fn binary_tournament(
                     cd_b,
                     &CompareMethod::LargerIsBetter,
                     Some(true),
-                    Some(&algorithm.random_state),
+                    Some(&mut algorithm.random_state),
                 )
                 .map_or(f64::NAN, |w| w as f64);
             }

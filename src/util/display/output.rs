@@ -1,5 +1,10 @@
 use crate::{
-    core::{callback::{Callback, CallbackBase}, individual::Value, problem::Problem},
+    core::{
+        algorithm::Algorithm,
+        callback::{Callback, CallbackBase},
+        individual::Value,
+        problem::Problem,
+    },
     util::display::column::{Column, center_str, format_text},
 };
 
@@ -109,6 +114,7 @@ impl OutputBase {
     /// Mirrors `Output.__init__()` — creates with the two default columns.
     pub fn new() -> Self {
         Self {
+            callback: CallbackBase::new(),
             columns: Vec::<Box<dyn Column>>::from([
                 Box::new(NumberOfGenerations::new(6)),
                 Box::new(NumberOfEvaluations::new(8)),
@@ -170,4 +176,8 @@ impl Callback for OutputBase {
             col.update(algorithm);
         }
     }
+}
+
+pub trait Output {
+    fn base() -> OutputBase;
 }
