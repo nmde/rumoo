@@ -1,312 +1,490 @@
-import warnings
-from abc import abstractmethod
-
-import numpy as np
-
-# ---------------------------------------------------------------------------------------------------------
-# Object Oriented Interface
-# ---------------------------------------------------------------------------------------------------------
-
-# ---- Abstract Class
-from numpy.linalg import LinAlgError
-
-
-class Normalization:
-
-    def __init__(self) -> None:
-        super().__init__()
-
-    @abstractmethod
-    def forward(self, X):
-        pass
-
-    @abstractmethod
-    def backward(self, X):
-        pass
-
-
-# ---- Useful if normalization is optional - can be simply disabled by using this object
-class NoNormalization(Normalization):
-
-    def forward(self, X):
-        return X
-
-    def backward(self, X):
-        return X
-
-
-# ---- Normalizes between zero and one given bounds or estimating them
-class ZeroToOneNormalization(Normalization):
-
-    def __init__(self, xl=None, xu=None) -> None:
-        super().__init__()
-
-        # if both are None we are basically done because normalization is disabled
-        if xl is None and xu is None:
-            self.xl, self.xu = None, None
-            return
-
-        # if not set simply fall back no nan values
-        if xl is None:
-            xl = np.full_like(xu, np.nan)
-        if xu is None:
-            xu = np.full_like(xl, np.nan)
-
-        xl, xu = np.copy(xl).astype(float), np.copy(xu).astype(float)
-
-        # if both are equal then set the upper bound to none (always the 0 or lower bound will be returned then)
-        xu[xl == xu] = np.nan
-
-        # store the lower and upper bounds
-        self.xl, self.xu = xl, xu
-
-        # check out when the input values are nan
-        xl_nan, xu_nan = np.isnan(xl), np.isnan(xu)
-
-        # now create all the masks that are necessary
-        self.xl_only, self.xu_only = np.logical_and(~xl_nan, xu_nan), np.logical_and(xl_nan, ~xu_nan)
-        self.both_nan = np.logical_and(np.isnan(xl), np.isnan(xu))
-        self.neither_nan = np.logical_and(~np.isnan(xl), ~np.isnan(xu))
-
-        # if neither is nan than xu must be greater or equal than xl
-        any_nan = np.logical_or(np.isnan(xl), np.isnan(xu))
-        assert np.all(np.logical_or(xu >= xl, any_nan)), "xl must be less or equal than xu."
-
-    def forward(self, X):
-        if X is None or (self.xl is None and self.xu is None):
-            return X
-
-        # simple copy the input
-        N = np.copy(X)
-
-        # normalize between zero and one if neither of them is nan
-        N[...,  self.neither_nan] = (X[...,  self.neither_nan] - self.xl[self.neither_nan]) / (self.xu[self.neither_nan] - self.xl[self.neither_nan])
-
-        N[..., self.xl_only] = X[..., self.xl_only] - self.xl[self.xl_only]
-
-        N[..., self.xu_only] = 1.0 - (self.xu[self.xu_only] - X[..., self.xu_only])
-
-        return N
-
-    def backward(self, N):
-        if N is None or (self.xl is None and self.xu is None):
-            return N
-
-        xl, xu, xl_only, xu_only = self.xl, self.xu, self.xl_only, self.xu_only
-        both_nan, neither_nan = self.both_nan, self.neither_nan
-
-        X = N.copy()
-        X[..., neither_nan] = xl[neither_nan] + N[..., neither_nan] * (xu[neither_nan] - xl[neither_nan])
-
-        X[..., xl_only] = N[..., xl_only] + xl[xl_only]
-
-        X[..., xu_only] = xu[xu_only] - (1.0 - N[..., xu_only])
-
-        return X
-
-
-# ---------------------------------------------------------------------------------------------------------
-# Simple Normalization
-# Does not consider any none values and assumes lower as well as upper bounds are given.
-# ---------------------------------------------------------------------------------------------------------
-
-
-class SimpleZeroToOneNormalization(Normalization):
-
-    def __init__(self, xl=None, xu=None, estimate_bounds=True) -> None:
-        super().__init__()
-        self.xl = xl
-        self.xu = xu
-        self.estimate_bounds = estimate_bounds
-
-    def forward(self, X):
-
-        if self.estimate_bounds:
-            if self.xl is None:
-                self.xl = np.min(X, axis=0)
-            if self.xu is None:
-                self.xu = np.max(X, axis=0)
-
-        xl, xu = self.xl, self.xu
-
-        # if np.any(xl == xu):
-        #     raise Exception("Normalization failed because lower and upper bounds are equal!")
-
-        # calculate the denominator
-        denom = xu - xl
-
-        # we can not divide by zero -> plus small epsilon
-        denom += (denom == 0) * 1e-32
-
-        # normalize the actual values
-        N = (X - xl) / denom
-
-        return N
-
-    def backward(self, X):
-        return X * (self.xu - self.xl) + self.xl
-
-
-# ---------------------------------------------------------------------------------------------------------
-# Functional Interface
-# ---------------------------------------------------------------------------------------------------------
-
-
-def normalize(X, xl=None, xu=None, return_bounds=False, estimate_bounds_if_none=True):
-    if estimate_bounds_if_none:
-        if xl is None:
-            xl = np.min(X, axis=0)
-        if xu is None:
-            xu = np.max(X, axis=0)
-
-    if isinstance(xl, float) or isinstance(xl, int):
-        xl = np.full(X.shape[-1], xl)
-
-    if isinstance(xu, float) or isinstance(xu, int):
-        xu = np.full(X.shape[-1], xu)
-
-    norm = ZeroToOneNormalization(xl, xu)
-    X = norm.forward(X)
-
-    if not return_bounds:
-        return X
-    else:
-        return X, norm.xl, norm.xu
-
-
-def denormalize(x, xl, xu):
-    return ZeroToOneNormalization(xl, xu).backward(x)
-
-
-def standardize(x, return_bounds=False):
-    mean = np.mean(x, axis=0)
-    std = np.std(x, axis=0)
-
-    # standardize
-    val = (x - mean) / std
-
-    if not return_bounds:
-        return val
-    else:
-        return val, mean, std
-
-
-def destandardize(x, mean, std):
-    return (x * std) + mean
-
-
-# ---------------------------------------------------------------------------------------------------------
-# Pre Normalization
-# A class inheriting from it can use the in-built feature of normalizing
-# ---------------------------------------------------------------------------------------------------------
-
-
-class PreNormalization:
-
-    def __init__(self, zero_to_one=False, ideal=None, nadir=None, **kwargs):
-
-        # normalization related stuff if that should be performed beforehand
-        self.ideal, self.nadir = ideal, nadir
-
-        if zero_to_one:
-            assert self.ideal is not None and self.nadir is not None, "For normalization either provide pf or bounds!"
-
-            n_dim = len(self.ideal)
-            self.normalization = ZeroToOneNormalization(self.ideal, self.nadir)
-
-            # now the ideal and nadir points have change to only zeros and ones
-            self.ideal, self.nadir = np.zeros(n_dim), np.ones(n_dim)
-
-        else:
-            self.normalization = NoNormalization()
-
-    def do(self, *args, **kwargs):
-        pass
-
-
-# ---------------------------------------------------------------------------------------------------------
-# Normalization in the Objective Space
-# ---------------------------------------------------------------------------------------------------------
-
-
-def find_ideal(F, current=None):
-    p = F.min(axis=0)
-    if current is not None:
-        p = np.minimum(current, p)
-    return p
-
-
-def get_extreme_points_c(F, ideal_point, extreme_points=None):
-    # calculate the asf which is used for the extreme point decomposition
-    weights = np.eye(F.shape[1])
-    weights[weights == 0] = 1e6
-
-    # add the old extreme points to never loose them for normalization
-    _F = F
-    if extreme_points is not None:
-        _F = np.concatenate([extreme_points, _F], axis=0)
-
-    # use __F because we substitute small values to be 0
-    __F = _F - ideal_point
-    __F[__F < 1e-3] = 0
-
-    # update the extreme points for the normalization having the highest asf value each
-    F_asf = np.max(__F * weights[:, None, :], axis=2)
-
-    I = np.argmin(F_asf, axis=1)
-    extreme_points = _F[I, :]
-
-    return extreme_points
-
-
-def get_nadir_point(extreme_points, ideal_point, worst_point, worst_of_front, worst_of_population):
-    try:
-
-        # find the intercepts using gaussian elimination
-        M = extreme_points - ideal_point
-        b = np.ones(extreme_points.shape[1])
-        plane = np.linalg.solve(M, b)
-
-        warnings.simplefilter("ignore")
-        intercepts = 1 / plane
-
-        nadir_point = ideal_point + intercepts
-
-        # check if the hyperplane makes sense
-        if not np.allclose(np.dot(M, plane), b) or np.any(intercepts <= 1e-6):
-            raise LinAlgError()
-
-        # if the nadir point should be larger than any value discovered so far set it to that value
-        # NOTE: different to the proposed version in the paper
-        b = nadir_point > worst_point
-        nadir_point[b] = worst_point[b]
-
-    except LinAlgError:
-
-        # fall back to worst of front otherwise
-        nadir_point = worst_of_front
-
-    # if the range is too small set it to worst of population
-    b = nadir_point - ideal_point <= 1e-6
-    nadir_point[b] = worst_of_population[b]
-
-    return nadir_point
-
-
-class ObjectiveSpaceNormalization:
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._ideal = None
-        self._infeas_ideal = None
-        self._worst = None
-
-    def update(self, pop):
-        F, feas = pop.get("F", "FEAS")
-        self._infeas_ideal = find_ideal(F, current=self._infeas_ideal)
-
-        if np.any(feas):
-            self._ideal = find_ideal(F[feas[:, 0]], self._ideal)
-
-    def ideal(self, only_feas=True):
-        return self._ideal if only_feas else self._infeas_ideal
+use anyhow::{Result, anyhow};
+use ndarray::{Array1, Array2, Axis};
+use ndarray_linalg::Solve;
+
+// -------------------------------------------------------------------------------------------------
+// Normalization trait
+// -------------------------------------------------------------------------------------------------
+
+/// Mirrors `pymoo.util.normalization.Normalization` (abstract base).
+pub trait Normalization {
+    fn forward(&self, x: &Array2<f64>) -> Array2<f64>;
+    fn backward(&self, x: &Array2<f64>) -> Array2<f64>;
+}
+
+// -------------------------------------------------------------------------------------------------
+// NoNormalization
+// -------------------------------------------------------------------------------------------------
+
+/// Mirrors `pymoo.util.normalization.NoNormalization` — identity transform.
+pub struct NoNormalization;
+
+impl Normalization for NoNormalization {
+    fn forward(&self, x: &Array2<f64>) -> Array2<f64> {
+        x.clone()
+    }
+
+    fn backward(&self, x: &Array2<f64>) -> Array2<f64> {
+        x.clone()
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// ZeroToOneNormalization
+// -------------------------------------------------------------------------------------------------
+
+/// Mirrors `pymoo.util.normalization.ZeroToOneNormalization`.
+///
+/// Normalises each column independently, handling `NaN` bounds via column masks.
+pub struct ZeroToOneNormalization {
+    pub xl: Option<Array1<f64>>,
+    pub xu: Option<Array1<f64>>,
+    /// Columns where xl is known and xu is NaN.
+    pub xl_only: Option<Array1<bool>>,
+    /// Columns where xu is known and xl is NaN.
+    pub xu_only: Option<Array1<bool>>,
+    /// Columns where both xl and xu are NaN.
+    pub both_nan: Option<Array1<bool>>,
+    /// Columns where neither xl nor xu is NaN.
+    pub neither_nan: Option<Array1<bool>>,
+}
+
+impl ZeroToOneNormalization {
+    /// Mirrors `ZeroToOneNormalization.__init__(xl=None, xu=None)`.
+    pub fn new(xl: Option<Array1<f64>>, xu: Option<Array1<f64>>) -> Result<Self> {
+        if xl.is_none() && xu.is_none() {
+            return Ok(Self {
+                xl: None,
+                xu: None,
+                xl_only: None,
+                xu_only: None,
+                both_nan: None,
+                neither_nan: None,
+            });
+        }
+
+        let n = xl.as_ref().or(xu.as_ref()).map(|a| a.len()).unwrap_or(0);
+
+        let mut xl = xl.unwrap_or_else(|| Array1::from_elem(n, f64::NAN));
+        let mut xu = xu.unwrap_or_else(|| Array1::from_elem(n, f64::NAN));
+
+        // Mirrors: xu[xl == xu] = np.nan
+        for i in 0..n {
+            if xl[i] == xu[i] {
+                xu[i] = f64::NAN;
+            }
+        }
+
+        let xl_nan: Array1<bool> = xl.mapv(f64::is_nan);
+        let xu_nan: Array1<bool> = xu.mapv(f64::is_nan);
+
+        let xl_only = Array1::from_shape_fn(n, |i| !xl_nan[i] && xu_nan[i]);
+        let xu_only = Array1::from_shape_fn(n, |i| xl_nan[i] && !xu_nan[i]);
+        let both_nan = Array1::from_shape_fn(n, |i| xl_nan[i] && xu_nan[i]);
+        let neither_nan = Array1::from_shape_fn(n, |i| !xl_nan[i] && !xu_nan[i]);
+
+        // Mirrors: assert np.all(np.logical_or(xu >= xl, any_nan))
+        for i in 0..n {
+            if !xl_nan[i] && !xu_nan[i] && xu[i] >= xl[i] {
+                return Err(anyhow!("xl must be less or equal than xu."));
+            }
+        }
+
+        Ok(Self {
+            xl: Some(xl),
+            xu: Some(xu),
+            xl_only: Some(xl_only),
+            xu_only: Some(xu_only),
+            both_nan: Some(both_nan),
+            neither_nan: Some(neither_nan),
+        })
+    }
+}
+
+impl Normalization for ZeroToOneNormalization {
+    /// Mirrors `ZeroToOneNormalization.forward(X)`.
+    fn forward(&self, x: &Array2<f64>) -> Array2<f64> {
+        if self.xl.is_none() && self.xu.is_none() {
+            return x.clone();
+        }
+        let xl = self.xl.as_ref().unwrap();
+        let xu = self.xu.as_ref().unwrap();
+        let neither_nan = self.neither_nan.as_ref().unwrap();
+        let xl_only = self.xl_only.as_ref().unwrap();
+        let xu_only = self.xu_only.as_ref().unwrap();
+
+        let mut n = x.clone();
+        let ncols = x.ncols();
+
+        for j in 0..ncols {
+            if neither_nan[j] {
+                let mut col = n.column_mut(j);
+                let range = xu[j] - xl[j];
+                col.mapv_inplace(|v| (v - xl[j]) / range);
+            } else if xl_only[j] {
+                let mut col = n.column_mut(j);
+                col.mapv_inplace(|v| v - xl[j]);
+            } else if xu_only[j] {
+                let mut col = n.column_mut(j);
+                col.mapv_inplace(|v| 1.0 - (xu[j] - v));
+            }
+            // both_nan: leave unchanged
+        }
+        n
+    }
+
+    /// Mirrors `ZeroToOneNormalization.backward(N)`.
+    fn backward(&self, x: &Array2<f64>) -> Array2<f64> {
+        if self.xl.is_none() && self.xu.is_none() {
+            return x.clone();
+        }
+        let xl = self.xl.as_ref().unwrap();
+        let xu = self.xu.as_ref().unwrap();
+        let neither_nan = self.neither_nan.as_ref().unwrap();
+        let xl_only = self.xl_only.as_ref().unwrap();
+        let xu_only = self.xu_only.as_ref().unwrap();
+
+        let mut result = x.clone();
+        let ncols = x.ncols();
+
+        for j in 0..ncols {
+            if neither_nan[j] {
+                let mut col = result.column_mut(j);
+                col.mapv_inplace(|v| xl[j] + v * (xu[j] - xl[j]));
+            } else if xl_only[j] {
+                let mut col = result.column_mut(j);
+                col.mapv_inplace(|v| v + xl[j]);
+            } else if xu_only[j] {
+                let mut col = result.column_mut(j);
+                col.mapv_inplace(|v| xu[j] - (1.0 - v));
+            }
+        }
+        result
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// SimpleZeroToOneNormalization
+// -------------------------------------------------------------------------------------------------
+
+/// Mirrors `pymoo.util.normalization.SimpleZeroToOneNormalization`.
+pub struct SimpleZeroToOneNormalization {
+    pub xl: Option<Array1<f64>>,
+    pub xu: Option<Array1<f64>>,
+    pub estimate_bounds: bool,
+}
+
+impl SimpleZeroToOneNormalization {
+    /// Mirrors `SimpleZeroToOneNormalization.__init__(xl=None, xu=None, estimate_bounds=True)`.
+    pub fn new(
+        xl: Option<Array1<f64>>,
+        xu: Option<Array1<f64>>,
+        estimate_bounds: Option<bool>,
+    ) -> Self {
+        Self {
+            xl,
+            xu,
+            estimate_bounds: estimate_bounds.unwrap_or(true),
+        }
+    }
+}
+
+impl Normalization for SimpleZeroToOneNormalization {
+    /// Mirrors `SimpleZeroToOneNormalization.forward(X)`.
+    fn forward(&self, x: &Array2<f64>) -> Array2<f64> {
+        let xl = self.xl.clone().unwrap_or_else(|| {
+            if self.estimate_bounds {
+                x.map_axis(Axis(0), |col| {
+                    col.iter().cloned().fold(f64::INFINITY, f64::min)
+                })
+            } else {
+                Array1::zeros(x.ncols())
+            }
+        });
+        let xu = self.xu.clone().unwrap_or_else(|| {
+            if self.estimate_bounds {
+                x.map_axis(Axis(0), |col| {
+                    col.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+                })
+            } else {
+                Array1::ones(x.ncols())
+            }
+        });
+
+        // Mirrors: denom = xu - xl; denom += (denom == 0) * 1e-32
+        let denom: Array1<f64> = (&xu - &xl).mapv(|v| if v == 0.0 { 1e-32 } else { v });
+
+        (x - &xl) / &denom
+    }
+
+    /// Mirrors `SimpleZeroToOneNormalization.backward(X)`.
+    fn backward(&self, x: &Array2<f64>) -> Array2<f64> {
+        let xl = self.xl.as_ref().expect("xl required for backward");
+        let xu = self.xu.as_ref().expect("xu required for backward");
+        x * &(xu - xl) + xl
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Functional interface
+// -------------------------------------------------------------------------------------------------
+
+/// Mirrors `pymoo.util.normalization.normalize(X, xl=None, xu=None, return_bounds=False, estimate_bounds_if_none=True)`.
+pub fn normalize(
+    x: &Array2<f64>,
+    xl: Option<&Array1<f64>>,
+    xu: Option<&Array1<f64>>,
+) -> Array2<f64> {
+    let n = x.ncols();
+
+    let xl = xl.cloned().or_else(|| {
+        Some(x.map_axis(Axis(0), |col| {
+            col.iter().cloned().fold(f64::INFINITY, f64::min)
+        }))
+    });
+    let xu = xu.cloned().or_else(|| {
+        Some(x.map_axis(Axis(0), |col| {
+            col.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+        }))
+    });
+
+    ZeroToOneNormalization::new(xl, xu).forward(x)
+}
+
+/// Mirrors `pymoo.util.normalization.denormalize(x, xl, xu)`.
+pub fn denormalize(x: &Array2<f64>, xl: &Array1<f64>, xu: &Array1<f64>) -> Array2<f64> {
+    ZeroToOneNormalization::new(Some(xl.clone()), Some(xu.clone())).backward(x)
+}
+
+/// Mirrors `pymoo.util.normalization.standardize(x, return_bounds=False)`.
+///
+/// Returns `(standardized, mean, std)`.
+pub fn standardize(x: &Array2<f64>) -> (Array2<f64>, Array1<f64>, Array1<f64>) {
+    let mean = x.map_axis(Axis(0), |col| col.mean().unwrap_or(0.0));
+    let std = x.map_axis(Axis(0), |col| {
+        let m = col.mean().unwrap_or(0.0);
+        let var = col.iter().map(|&v| (v - m).powi(2)).sum::<f64>() / col.len() as f64;
+        var.sqrt()
+    });
+    let val = (x - &mean) / &std;
+    (val, mean, std)
+}
+
+/// Mirrors `pymoo.util.normalization.destandardize(x, mean, std)`.
+pub fn destandardize(x: &Array2<f64>, mean: &Array1<f64>, std: &Array1<f64>) -> Array2<f64> {
+    x * std + mean
+}
+
+// -------------------------------------------------------------------------------------------------
+// PreNormalization
+// -------------------------------------------------------------------------------------------------
+
+/// Mirrors `pymoo.util.normalization.PreNormalization`.
+pub struct PreNormalization {
+    pub ideal: Option<Array1<f64>>,
+    pub nadir: Option<Array1<f64>>,
+    pub normalization: Box<dyn Normalization>,
+}
+
+impl PreNormalization {
+    /// Mirrors `PreNormalization.__init__(zero_to_one=False, ideal=None, nadir=None)`.
+    pub fn new(
+        zero_to_one: bool,
+        ideal: Option<Array1<f64>>,
+        nadir: Option<Array1<f64>>,
+    ) -> Result<Self> {
+        if zero_to_one {
+            if ideal.is_some() && nadir.is_some() {
+                return Err(anyhow!("For normalization, provide either pf or bounds"));
+            }
+            let n_dim = ideal.as_ref().unwrap().len();
+            let normalization = ZeroToOneNormalization::new(ideal.clone(), nadir.clone());
+            Ok(Self {
+                ideal: Some(Array1::zeros(n_dim)),
+                nadir: Some(Array1::ones(n_dim)),
+                normalization: Box::new(normalization),
+            })
+        } else {
+            Ok(Self {
+                ideal,
+                nadir,
+                normalization: Box::new(NoNormalization),
+            })
+        }
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// Objective-space helper functions
+// -------------------------------------------------------------------------------------------------
+
+/// Mirrors `pymoo.util.normalization.find_ideal(F, current=None)`.
+pub fn find_ideal(f: &Array2<f64>, current: Option<&Array1<f64>>) -> Array1<f64> {
+    let p = f.map_axis(Axis(0), |col| {
+        col.iter().cloned().fold(f64::INFINITY, f64::min)
+    });
+    match current {
+        None => p,
+        Some(c) => Array1::from_shape_fn(p.len(), |i| p[i].min(c[i])),
+    }
+}
+
+/// Mirrors `pymoo.util.normalization.get_extreme_points_c(F, ideal_point, extreme_points=None)`.
+pub fn get_extreme_points_c(
+    f: &Array2<f64>,
+    ideal_point: &Array1<f64>,
+    extreme_points: Option<&Array2<f64>>,
+) -> Array2<f64> {
+    let n_obj = f.ncols();
+
+    // Mirrors: weights = np.eye(F.shape[1]); weights[weights == 0] = 1e6
+    let mut weights = Array2::<f64>::eye(n_obj);
+    weights.mapv_inplace(|v| if v == 0.0 { 1e6 } else { v });
+
+    // Mirrors: _F = np.concatenate([extreme_points, _F], axis=0) if extreme_points is not None
+    let combined: Array2<f64> = match extreme_points {
+        Some(ep) => ndarray::concatenate(Axis(0), &[ep.view(), f.view()]).unwrap(),
+        None => f.clone(),
+    };
+
+    // Mirrors: __F = _F - ideal_point; __F[__F < 1e-3] = 0
+    let mut shifted = &combined - ideal_point;
+    shifted.mapv_inplace(|v| if v < 1e-3 { 0.0 } else { v });
+
+    // Mirrors: F_asf = np.max(__F * weights[:, None, :], axis=2)
+    // weights[i]: weight vector i; F_asf[i, j] = max(__F[j, :] * weights[i, :])
+    let n_ind = shifted.nrows();
+    let mut f_asf = Array2::<f64>::zeros((n_obj, n_ind));
+    for i in 0..n_obj {
+        for j in 0..n_ind {
+            f_asf[[i, j]] = (0..n_obj)
+                .map(|k| shifted[[j, k]] * weights[[i, k]])
+                .fold(f64::NEG_INFINITY, f64::max);
+        }
+    }
+
+    // Mirrors: I = np.argmin(F_asf, axis=1); extreme_points = _F[I, :]
+    let indices: Vec<usize> = (0..n_obj)
+        .map(|i| {
+            f_asf
+                .row(i)
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(idx, _)| idx)
+                .unwrap_or(0)
+        })
+        .collect();
+
+    let rows: Vec<_> = indices
+        .iter()
+        .map(|&idx| combined.row(idx).to_owned())
+        .collect();
+    ndarray::stack(Axis(0), &rows.iter().map(|r| r.view()).collect::<Vec<_>>())
+        .unwrap_or_else(|_| Array2::zeros((0, n_obj)))
+}
+
+/// Mirrors `pymoo.util.normalization.get_nadir_point(...)`.
+pub fn get_nadir_point(
+    extreme_points: &Array2<f64>,
+    ideal_point: &Array1<f64>,
+    worst_point: &Array1<f64>,
+    worst_of_front: &Array1<f64>,
+    worst_of_population: &Array1<f64>,
+) -> Array1<f64> {
+    let n_obj = ideal_point.len();
+
+    // Mirrors: M = extreme_points - ideal_point; b = np.ones(n); plane = np.linalg.solve(M, b)
+    let m = extreme_points - ideal_point;
+    let b = Array1::ones(n_obj);
+
+    let mut nadir_point = match m.solve(&b) {
+        Ok(plane) => {
+            // Mirrors: intercepts = 1 / plane; nadir_point = ideal_point + intercepts
+            let intercepts: Array1<f64> = plane.mapv(|v| 1.0 / v);
+
+            // Mirrors: if not np.allclose(M @ plane, b) or np.any(intercepts <= 1e-6): raise LinAlgError
+            let residual: Array1<f64> = m.dot(&plane) - &b;
+            let close = residual.iter().all(|&v| v.abs() < 1e-8);
+            let valid = intercepts.iter().all(|&v| v > 1e-6);
+
+            if close && valid {
+                let mut np = ideal_point + &intercepts;
+                // Mirrors: b = nadir_point > worst_point; nadir_point[b] = worst_point[b]
+                for i in 0..n_obj {
+                    if np[i] > worst_point[i] {
+                        np[i] = worst_point[i];
+                    }
+                }
+                np
+            } else {
+                worst_of_front.clone()
+            }
+        }
+        Err(_) => worst_of_front.clone(),
+    };
+
+    // Mirrors: b = nadir_point - ideal_point <= 1e-6; nadir_point[b] = worst_of_population[b]
+    for i in 0..n_obj {
+        if nadir_point[i] - ideal_point[i] <= 1e-6 {
+            nadir_point[i] = worst_of_population[i];
+        }
+    }
+
+    nadir_point
+}
+
+// -------------------------------------------------------------------------------------------------
+// ObjectiveSpaceNormalization
+// -------------------------------------------------------------------------------------------------
+
+/// Mirrors `pymoo.util.normalization.ObjectiveSpaceNormalization`.
+pub struct ObjectiveSpaceNormalization {
+    pub _ideal: Option<Array1<f64>>,
+    pub _infeas_ideal: Option<Array1<f64>>,
+    pub _worst: Option<Array1<f64>>,
+}
+
+impl ObjectiveSpaceNormalization {
+    /// Mirrors `ObjectiveSpaceNormalization.__init__()`.
+    pub fn new() -> Self {
+        Self {
+            _ideal: None,
+            _infeas_ideal: None,
+            _worst: None,
+        }
+    }
+
+    /// Mirrors `ObjectiveSpaceNormalization.update(pop)`.
+    pub fn update(&mut self, f: &Array2<f64>, feas: &Array1<bool>) {
+        // Mirrors: self._infeas_ideal = find_ideal(F, current=self._infeas_ideal)
+        self._infeas_ideal = Some(find_ideal(f, self._infeas_ideal.as_ref()));
+
+        // Mirrors: if np.any(feas): self._ideal = find_ideal(F[feas[:, 0]], self._ideal)
+        if feas.iter().any(|&v| v) {
+            let feas_rows: Vec<_> = f
+                .outer_iter()
+                .zip(feas.iter())
+                .filter(|(_, &ok)| ok)
+                .map(|(r, _)| r.to_owned())
+                .collect();
+            if !feas_rows.is_empty() {
+                let f_feas = ndarray::stack(
+                    Axis(0),
+                    &feas_rows.iter().map(|r| r.view()).collect::<Vec<_>>(),
+                )
+                .unwrap();
+                self._ideal = Some(find_ideal(&f_feas, self._ideal.as_ref()));
+            }
+        }
+    }
+
+    /// Mirrors `ObjectiveSpaceNormalization.ideal(only_feas=True)`.
+    pub fn ideal(&self, only_feas: bool) -> Option<&Array1<f64>> {
+        if only_feas {
+            self._ideal.as_ref()
+        } else {
+            self._infeas_ideal.as_ref()
+        }
+    }
+}

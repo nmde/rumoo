@@ -1,12 +1,15 @@
-use crate::core::{
-    algorithm::Algorithm,
-    individual::{IndividualField, Value},
-    termination::{Termination, TerminationBase},
+use crate::{
+    core::{
+        algorithm::Algorithm,
+        individual::{IndividualField, Value},
+        termination::{Termination, TerminationBase},
+    },
+    termination::delta::DeltaToleranceTermination,
 };
 
 /// Mirrors `pymoo.termination.cv.ConstraintViolationTermination`.
 pub struct ConstraintViolationTermination {
-    pub inner: DeltaToleranceTermination,
+    pub inner: Box<dyn DeltaToleranceTermination>,
     pub terminate_when_feasible: bool,
 }
 
@@ -59,17 +62,19 @@ impl Termination for ConstraintViolationTermination {
             .map_or(false, |p| p.has_constraints());
 
         if has_constraints {
-            let feasible_found = algorithm
-                .base()
-                .opt
-                .as_ref()
-                .map_or(false, |opt| match opt.get(&IndividualField::Feas) {
+            let feasible_found = algorithm.base().opt.as_ref().map_or(false, |opt| {
+                match opt.get(&IndividualField::Feas) {
                     Value::BoolArray(arr) => arr.iter().any(|&v| v),
                     _ => false,
-                });
+                }
+            });
 
             if feasible_found {
-                if self.terminate_when_feasible { 1.0 } else { 0.0 }
+                if self.terminate_when_feasible {
+                    1.0
+                } else {
+                    0.0
+                }
             } else {
                 // Mirrors: return super()._update(algorithm)
                 self.inner._update(algorithm)

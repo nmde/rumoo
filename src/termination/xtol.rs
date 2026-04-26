@@ -8,6 +8,7 @@ use crate::{
         termination::{Termination, TerminationBase},
     },
     termination::delta::{DeltaToleranceBase, DeltaToleranceTermination},
+    util::normalization::normalize,
 };
 
 /// Mirrors `pymoo.termination.xtol.DesignSpaceTermination`.
@@ -48,7 +49,7 @@ impl DesignSpaceTermination {
         // Mirrors: if X.dtype != object and problem.has_bounds(): X = normalize(X, xl=xl, xu=xu)
         let problem = algorithm.base().problem.as_ref()?;
         if problem.has_bounds() {
-            Some(normalize(x, problem.xl(), problem.xu()))
+            Some(normalize(&x, problem.xl(), problem.xu()))
         } else {
             Some(x)
         }

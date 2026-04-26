@@ -4,6 +4,7 @@ pub mod display;
 pub mod dominator;
 pub mod misc;
 pub mod nds;
+pub mod normalization;
 pub mod optimum;
 pub mod sliding_window;
 
