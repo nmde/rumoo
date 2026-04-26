@@ -7,6 +7,7 @@ use crate::{
         individual::{IndividualField, Value},
         termination::{Termination, TerminationBase},
     },
+    indicators::igd::IGD,
     termination::delta::{DeltaToleranceBase, DeltaToleranceTermination},
     util::normalization::normalize,
 };
@@ -35,7 +36,7 @@ impl DesignSpaceTermination {
     /// `return IGD(current.astype(float)).do(prev.astype(float))`.
     /// Falls back to `f64::INFINITY` on failure (mirrors the bare `except` clause).
     fn _delta_array(&self, prev: &Array2<f64>, current: &Array2<f64>) -> f64 {
-        IGD::new(current).do_calc(prev).unwrap_or(f64::INFINITY)
+        IGD::new(*current).do_calc(prev).unwrap_or(f64::INFINITY)
     }
 
     /// Mirrors `DesignSpaceTermination._data(algorithm)`:

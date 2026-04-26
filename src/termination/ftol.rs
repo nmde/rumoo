@@ -5,9 +5,7 @@ use crate::{
         algorithm::Algorithm,
         individual::{IndividualField, Value},
         termination::{Termination, TerminationBase},
-    },
-    termination::delta::{DeltaToleranceBase, DeltaToleranceTermination},
-    util::normalization::normalize,
+    }, indicators::igd::IGD, termination::delta::{DeltaToleranceBase, DeltaToleranceTermination}, util::normalization::normalize
 };
 
 /// Mirrors `pymoo.termination.ftol.calc_delta(a, b)`:
@@ -243,7 +241,7 @@ impl MultiObjectiveSpaceTermination {
         let p_n = normalize(&prev.f, Some(c_ideal), Some(c_nadir));
 
         // Mirrors: delta_f = IGD(c_N).do(p_N)
-        let delta_f = IGD::new(&c_n).do_calc(&p_n).unwrap_or(f64::INFINITY);
+        let delta_f = IGD::new(c_n).do_calc(&p_n).unwrap_or(f64::INFINITY);
 
         self.delta_ideal = Some(delta_ideal);
         self.delta_nadir = Some(delta_nadir);
