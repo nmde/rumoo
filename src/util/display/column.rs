@@ -59,7 +59,7 @@ pub trait Column {
         center_str(self.name(), self.width())
     }
 
-    fn set(&self, value: Value) -> ();
+    fn set(&mut self, value: Value) -> ();
 }
 
 impl Column for ColumnBase {

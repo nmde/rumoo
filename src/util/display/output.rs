@@ -46,7 +46,7 @@ impl Column for NumberOfGenerations {
         format_text(self.value.map(|v| v.to_string()), self.width, true)
     }
 
-    fn set(&self, value: Value) -> () {
+    fn set(&mut self, value: Value) -> () {
         match value {
             Value::Int(i) => self.value = Some(i as usize),
             Value::Float(f) => self.value = Some(f as usize),
@@ -93,7 +93,7 @@ impl Column for NumberOfEvaluations {
         format_text(self.value.map(|v| v.to_string()), self.width, true)
     }
 
-    fn set(&self, value: Value) -> () {
+    fn set(&mut self, value: Value) -> () {
         match value {
             Value::Int(i) => self.value = Some(i as usize),
             Value::Float(f) => self.value = Some(f as usize),

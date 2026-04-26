@@ -1,4 +1,10 @@
-use crate::core::{individual::IndividualField, individual::Value, population::Population};
+use crate::{
+    core::{
+        individual::{IndividualField, Value},
+        population::Population,
+    },
+    util::nds::non_dominated_sorting::NonDominatedSorting,
+};
 
 /// Return the optimal subset of `pop`.
 ///
@@ -30,7 +36,7 @@ pub fn filter_optimum(pop: &Population, least_infeasible: Option<bool>) -> Optio
                 if n_obj > 1 {
                     // Mirrors: I = NonDominatedSorting().do(F, only_non_dominated_front=True)
                     //          ret = ret[I]
-                    let i = NonDominatedSorting::new().do_sort(&f, true);
+                    let i = NonDominatedSorting::new(None, None, None).do_sort(&f, true);
                     Some(ret.select(&i))
                 } else {
                     // Mirrors: ret = ret[np.argmin(F[:, 0])]

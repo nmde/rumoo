@@ -1,94 +1,140 @@
-import sys
+use ndarray::{Array1, Array2};
 
-import numpy as np
+use crate::util::dominator::Dominator;
 
-from pymoo.functions import load_function
-from pymoo.util.dominator import Dominator
+enum NonDominatedSortingMethod {
+    FastNonDominatedSort,
+}
 
+/// Mirrors `pymoo.util.nds.non_dominated_sorting.NonDominatedSorting`.
+pub struct NonDominatedSorting {
+    pub epsilon: Option<f64>,
+    pub method: NonDominatedSortingMethod,
+    pub dominator: Option<Dominator>,
+}
 
-class NonDominatedSorting:
+impl NonDominatedSorting {
+    /// Mirrors `NonDominatedSorting.__init__(epsilon=None, method="fast_non_dominated_sort")`.
+    pub fn new(
+        epsilon: Option<f64>,
+        method: Option<NonDominatedSortingMethod>,
+        dominator: Option<Dominator>,
+    ) -> Self {
+        Self {
+            epsilon,
+            method: method.unwrap_or(NonDominatedSortingMethod::FastNonDominatedSort),
+            dominator,
+        }
+    }
 
-    def __init__(self, epsilon=None, method="fast_non_dominated_sort", dominator=None) -> None:
-        super().__init__()
-        self.epsilon = epsilon
-        self.method = method
-        self.dominator = dominator
+    /// Mirrors `NonDominatedSorting.do(F, return_rank, only_non_dominated_front, n_stop_if_ranked, n_fronts)`.
+    ///
+    /// Returns `(fronts, rank)` — `rank` is `None` unless `return_rank` is `true`.
+    /// `do` is a Rust keyword; this method is named `sort`.
+    pub fn sort(
+        &self,
+        f: &Array2<f64>,
+        return_rank: Option<bool>,
+        only_non_dominated_front: Option<bool>,
+        n_stop_if_ranked: Option<usize>,
+        n_fronts: Option<usize>,
+    ) -> (Vec<Vec<usize>>, Option<Array1<usize>>) {
+        let n_stop_if_ranked = n_stop_if_ranked.unwrap_or(100_000_000);
+        let return_rank = return_rank.unwrap_or(false);
+        let only_non_dominated_front = only_non_dominated_front.unwrap_or(false);
 
-    def do(self, F, return_rank=False, only_non_dominated_front=False, n_stop_if_ranked=None, n_fronts=None, **kwargs):
-        F = F.astype(float)
+        let n_fronts = if only_non_dominated_front {
+            1
+        } else {
+            n_fronts.unwrap_or(100_000_000)
+        };
 
-        # if not set just set it to a very large values because the cython algorithms do not take None
-        if n_stop_if_ranked is None:
-            n_stop_if_ranked = int(1e8)
+        // Mirrors: if self.dominator is not None: use fast_non_dominated_sort with custom dominator
+        //          else: func = load_function(self.method); fronts = func(F, ...)
+        let raw_fronts: Vec<Vec<usize>> = if self.dominator.is_some() {
+            fast_non_dominated_sort(f, self.dominator.as_deref(), None)
+        } else {
+            let epsilon = self.epsilon;
+            match self.method {
+                NonDominatedSortingMethod::FastNonDominatedSort => {
+                    fast_non_dominated_sort(f, None, epsilon)
+                }
+                _ => fast_non_dominated_sort(f, None, epsilon),
+            }
+        };
 
-        # if only_non_dominated_front is True, we only need 1 front
-        if only_non_dominated_front:
-            n_fronts = 1
-        elif n_fronts is None:
-            n_fronts = int(1e8)
+        // Mirrors: collect fronts, stop when n_stop_if_ranked reached, limit to n_fronts
+        let mut fronts: Vec<Vec<usize>> = Vec::new();
+        let mut n_ranked = 0usize;
+        for front in raw_fronts.into_iter().take(n_fronts) {
+            n_ranked += front.len();
+            fronts.push(front);
+            if n_ranked >= n_stop_if_ranked {
+                break;
+            }
+        }
 
-        # if a custom dominator is provided, use the custom dominator and run fast_non_dominated_sort
-        if self.dominator is not None:
-            # Use the custom dominator directly
-            from pymoo.util.nds.fast_non_dominated_sort import fast_non_dominated_sort
-            fronts = fast_non_dominated_sort(F, dominator=self.dominator, **kwargs)
-        else:
-            # Use the standard function loader approach
-            func = load_function(self.method)
+        let rank = if return_rank {
+            Some(rank_from_fronts(&fronts, f.nrows()))
+        } else {
+            None
+        };
 
-            # set the epsilon if it should be set
-            if self.epsilon is not None:
-                kwargs["epsilon"] = float(self.epsilon)
+        (fronts, rank)
+    }
 
-            # add n_fronts parameter if the method supports it
-            if self.method == "fast_non_dominated_sort":
-                kwargs["n_fronts"] = n_fronts
-                kwargs["n_stop_if_ranked"] = n_stop_if_ranked
+    /// Convenience wrapper: mirrors `do(F, only_non_dominated_front=True)`.
+    ///
+    /// Returns the indices of the first (non-dominated) front.
+    pub fn do_sort(&self, f: &Array2<f64>, only_non_dominated_front: bool) -> Vec<usize> {
+        let (fronts, _) = self.sort(f, false, only_non_dominated_front, None, None);
+        if only_non_dominated_front {
+            fronts.into_iter().next().unwrap_or_default()
+        } else {
+            fronts.into_iter().flatten().collect()
+        }
+    }
+}
 
-            fronts = func(F, **kwargs)
+/// Mirrors `pymoo.util.nds.non_dominated_sorting.rank_from_fronts(fronts, n)`.
+///
+/// Returns a rank array of length `n`; `rank[i]` is the front index of solution `i`.
+/// Solutions not assigned to any front receive `usize::MAX` (mirrors `sys.maxsize`).
+pub fn rank_from_fronts(fronts: &[Vec<usize>], n: usize) -> Array1<usize> {
+    let mut rank = Array1::from_elem(n, usize::MAX);
+    for (i, front) in fronts.iter().enumerate() {
+        for &idx in front {
+            rank[idx] = i;
+        }
+    }
+    rank
+}
 
-        # convert to numpy array for each front and filter by n_stop_if_ranked
-        _fronts = []
-        n_ranked = 0
-        for front in fronts:
-
-            _fronts.append(np.array(front, dtype=int))
-
-            # increment the n_ranked solution counter
-            n_ranked += len(front)
-
-            # stop if more solutions than n_ranked are ranked
-            if n_ranked >= n_stop_if_ranked:
-                break
-
-        fronts = _fronts
-
-        if only_non_dominated_front:
-            return fronts[0]
-
-        if return_rank:
-            rank = rank_from_fronts(fronts, F.shape[0])
-            return fronts, rank
-
-        return fronts
-
-
-def rank_from_fronts(fronts, n):
-    # create the rank array and set values
-    rank = np.full(n, sys.maxsize, dtype=int)
-    for i, front in enumerate(fronts):
-        rank[front] = i
-
-    return rank
-
-
-# Returns all indices of F that are not dominated by the other objective values
-def find_non_dominated(F, _F=None, func=load_function("find_non_dominated")):
-    if _F is None:
-        indices = func(F.astype(float))
-        return np.array(indices, dtype=int)
-    else:
-        # Fallback to the matrix-based approach when _F is provided
-        M = Dominator.calc_domination_matrix(F, _F)
-        I = np.where(np.all(M >= 0, axis=1))[0]
-        return I
+/// Mirrors `pymoo.util.nds.non_dominated_sorting.find_non_dominated(F, _F=None)`.
+///
+/// Returns indices of rows in `F` that are not dominated.
+/// If `_f` is `None`, delegates to the compiled `find_non_dominated` function.
+/// If `_f` is provided, uses the domination matrix fallback.
+pub fn find_non_dominated(f: &Array2<f64>, _f: Option<&Array2<f64>>) -> Vec<usize> {
+    match _f {
+        None => {
+            // Mirrors: indices = func(F.astype(float)); return np.array(indices, dtype=int)
+            find_non_dominated_fast(f)
+        }
+        Some(other) => {
+            // Mirrors: M = Dominator.calc_domination_matrix(F, _F)
+            //          I = np.where(np.all(M >= 0, axis=1))[0]
+            let m = Dominator::calc_domination_matrix(f, other);
+            m.outer_iter()
+                .enumerate()
+                .filter_map(|(i, row)| {
+                    if row.iter().all(|&v| v >= 0) {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+    }
+}
