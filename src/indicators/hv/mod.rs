@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use ndarray::{Array1, Array2, Axis};
 
 use crate::{
-    indicators::distance_indicator::derive_ideal_and_nadir_from_pf,
+    core::hypervolume, indicators::distance_indicator::derive_ideal_and_nadir_from_pf,
     util::normalization::PreNormalization,
 };
 

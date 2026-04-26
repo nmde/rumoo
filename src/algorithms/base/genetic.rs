@@ -1,13 +1,13 @@
 use crate::core::{
     algorithm::{Algorithm, AlgorithmBase},
     crossover::Crossover,
-    duplicate::DuplicateElimination,
+    duplicate::{DefaultDuplicateElimination, DuplicateElimination},
     initialization::Initialization,
     mating::Mating,
     mutation::Mutation,
     population::Population,
     problem::Problem,
-    repair::Repair,
+    repair::{NoRepair, Repair},
     sampling::Sampling,
     selection::Selection,
     survival::Survival,
@@ -55,8 +55,8 @@ impl GeneticAlgorithm {
         let n_offsprings = n_offsprings.or(pop_size);
 
         // Mirrors: isinstance(eliminate_duplicates, bool) dispatch
-        let eliminate_duplicates =
-            eliminate_duplicates.unwrap_or_else(|| Box::new(DefaultDuplicateElimination::new()));
+        let eliminate_duplicates = eliminate_duplicates
+            .unwrap_or_else(|| Box::new(DefaultDuplicateElimination::new(None, None)));
 
         // Mirrors: repair = repair if repair is not None else NoRepair()
         let repair = repair.unwrap_or_else(|| Box::new(NoRepair::new()));
