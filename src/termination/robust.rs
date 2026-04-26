@@ -1,34 +1,43 @@
-from pymoo.core.termination import Termination
-from pymoo.util.sliding_window import SlidingWindow
+use crate::core::{
+    algorithm::Algorithm,
+    termination::{Termination, TerminationBase},
+};
 
+/// Mirrors `pymoo.termination.robust.RobustTermination`.
+///
+/// Wraps an inner termination criterion and smooths its progress signal over a
+/// sliding window of `period` generations, returning the minimum observed value.
+pub struct RobustTermination {
+    pub base: TerminationBase,
+    pub termination: Box<dyn Termination>,
+    pub history: SlidingWindow<f64>,
+}
 
-class RobustTermination(Termination):
+impl RobustTermination {
+    /// Mirrors `RobustTermination.__init__(termination, period=30)`.
+    pub fn new(termination: Box<dyn Termination>, period: usize) -> Self {
+        Self {
+            base: TerminationBase::new(),
+            termination,
+            history: SlidingWindow::new(period),
+        }
+    }
+}
 
-    def __init__(self,
-                 termination,
-                 period=30,
-                 ) -> None:
-        """
+impl Termination for RobustTermination {
+    fn base(&self) -> &TerminationBase {
+        &self.base
+    }
 
-        Parameters
-        ----------
+    fn base_mut(&mut self) -> &mut TerminationBase {
+        &mut self.base
+    }
 
-        termination : Termination
-            The termination criterion that shall become robust
-
-        period : int
-            The number of last generations to be considered for termination.
-
-        """
-        super().__init__()
-
-        # create a collection in case number of max generation or evaluations is used
-        self.termination = termination
-
-        # the history calculated also in a sliding window
-        self.history = SlidingWindow(period)
-
-    def _update(self, algorithm):
-        perc = self.termination.update(algorithm)
-        self.history.append(perc)
-        return min(self.history)
+    /// Mirrors `RobustTermination._update`:
+    /// `perc = self.termination.update(algorithm); self.history.append(perc); return min(self.history)`.
+    fn _update(&mut self, algorithm: &mut dyn Algorithm) -> f64 {
+        let perc = self.termination.update(algorithm);
+        self.history.push(perc);
+        self.history.iter().cloned().fold(f64::INFINITY, f64::min)
+    }
+}

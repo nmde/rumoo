@@ -5,6 +5,7 @@ use crate::{
     },
     termination::{
         max_eval::MaximumFunctionCallTermination, max_gen::MaximumGenerationTermination,
+        robust::RobustTermination,
     },
 };
 

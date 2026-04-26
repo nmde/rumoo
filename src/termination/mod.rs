@@ -3,6 +3,7 @@ pub mod fmin;
 pub mod max_eval;
 pub mod max_gen;
 pub mod max_time;
+pub mod robust;
 
 use anyhow::{Result, anyhow};
 
