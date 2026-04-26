@@ -2,7 +2,7 @@ use ndarray::Array2;
 
 use crate::{
     core::{algorithm::Algorithm, individual::Value},
-    indicators::igd::IGD,
+    indicators::{gd::GD, hv::Hypervolume, igd::IGD},
     termination::ftol::MultiObjectiveSpaceTermination,
     util::display::{
         column::{Column, format_text},
@@ -171,10 +171,13 @@ impl MultiObjectiveOutput {
                     self.igd = IGD::new(pf.clone())
                         .ok()
                         .and_then(|igd| igd.do_calc(&f_feas).ok());
-                    self.gd = Some(GD::new(pf, true).do_indicator(&f_feas));
+                    self.gd = Some(GD::new(*pf).do_indicator(&f_feas));
 
                     if self.hv_in_columns {
-                        self.hv = Some(Hypervolume::new(pf, true).do_indicator(&f_feas));
+                        self.hv = Some(
+                            Hypervolume::new(None, Some(*pf), None, None, None, None)
+                                .do_indicator(&f_feas),
+                        );
                     }
                 }
 
