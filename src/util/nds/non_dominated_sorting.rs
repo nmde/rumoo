@@ -1,6 +1,6 @@
 use ndarray::{Array1, Array2};
 
-use crate::util::dominator::Dominator;
+use crate::util::{dominator::Dominator, nds::fast_non_dominated_sort::fast_non_dominated_sort};
 
 enum NonDominatedSortingMethod {
     FastNonDominatedSort,
@@ -52,7 +52,7 @@ impl NonDominatedSorting {
         // Mirrors: if self.dominator is not None: use fast_non_dominated_sort with custom dominator
         //          else: func = load_function(self.method); fronts = func(F, ...)
         let raw_fronts: Vec<Vec<usize>> = if self.dominator.is_some() {
-            fast_non_dominated_sort(f, self.dominator.as_deref(), None)
+            fast_non_dominated_sort(f, self.dominator, None)
         } else {
             let epsilon = self.epsilon;
             match self.method {
@@ -87,7 +87,7 @@ impl NonDominatedSorting {
     ///
     /// Returns the indices of the first (non-dominated) front.
     pub fn do_sort(&self, f: &Array2<f64>, only_non_dominated_front: bool) -> Vec<usize> {
-        let (fronts, _) = self.sort(f, false, only_non_dominated_front, None, None);
+        let (fronts, _) = self.sort(f, Some(false), Some(only_non_dominated_front), None, None);
         if only_non_dominated_front {
             fronts.into_iter().next().unwrap_or_default()
         } else {
@@ -124,7 +124,7 @@ pub fn find_non_dominated(f: &Array2<f64>, _f: Option<&Array2<f64>>) -> Vec<usiz
         Some(other) => {
             // Mirrors: M = Dominator.calc_domination_matrix(F, _F)
             //          I = np.where(np.all(M >= 0, axis=1))[0]
-            let m = Dominator::calc_domination_matrix(f, other);
+            let m = Dominator::calc_domination_matrix(f, Some(other), None);
             m.outer_iter()
                 .enumerate()
                 .filter_map(|(i, row)| {
