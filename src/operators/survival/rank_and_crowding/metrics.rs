@@ -1,208 +1,346 @@
-import numpy as np
-from scipy.spatial.distance import pdist, squareform
-from pymoo.util.misc import find_duplicates
-from pymoo.functions import load_function
+use std::cmp::Ordering;
 
+use ndarray::{Array1, Array2, Axis, s};
 
-def get_crowding_function(label):
+use crate::util::misc::find_duplicates;
 
-    if label == "cd":
-        fun = FunctionalDiversity(calc_crowding_distance, filter_out_duplicates=False)
-    elif (label == "pcd") or (label == "pruning-cd"):
-        fun = FunctionalDiversity(load_function("calc_pcd"), filter_out_duplicates=True)
-    elif label == "ce":
-        fun = FunctionalDiversity(calc_crowding_entropy, filter_out_duplicates=True)
-    elif label == "mnn":
-        fun = FuncionalDiversityMNN(load_function("calc_mnn"), filter_out_duplicates=True)
-    elif label == "2nn":
-        fun = FuncionalDiversityMNN(load_function("calc_2nn"), filter_out_duplicates=True)
-    elif hasattr(label, "__call__"):
-        fun = FunctionalDiversity(label, filter_out_duplicates=True)
-    elif isinstance(label, CrowdingDiversity):
-        fun = label
-    else:
-        raise KeyError("Crowding function not defined")
-    return fun
+// -------------------------------------------------------------------------------------------------
+// CrowdingFunction trait (mirrors CrowdingDiversity)
+// -------------------------------------------------------------------------------------------------
 
+/// Mirrors `pymoo.operators.survival.rank_and_crowding.metrics.CrowdingDiversity`.
+pub trait CrowdingFunction {
+    /// Mirrors `CrowdingDiversity.do(F, n_remove)`.
+    fn do_crowd(&self, f: &Array2<f64>, n_remove: usize) -> Array1<f64>;
+}
 
-class CrowdingDiversity:
+/// Function pointer type for crowding metric implementations.
+pub type CrowdFn = fn(&Array2<f64>, usize) -> Array1<f64>;
 
-    def do(self, F, n_remove=0):
-        # Converting types Python int to Cython int would fail in some cases converting to long instead
-        n_remove = np.intc(n_remove)
-        F = np.array(F, dtype=np.double)
-        return self._do(F, n_remove=n_remove)
+// -------------------------------------------------------------------------------------------------
+// FunctionalDiversity
+// -------------------------------------------------------------------------------------------------
 
-    def _do(self, F, n_remove=None):
-        pass
+/// Mirrors `pymoo.operators.survival.rank_and_crowding.metrics.FunctionalDiversity`.
+pub struct FunctionalDiversity {
+    pub function: CrowdFn,
+    pub filter_out_duplicates: bool,
+}
 
+impl FunctionalDiversity {
+    pub fn new(function: CrowdFn, filter_out_duplicates: bool) -> Self {
+        Self { function, filter_out_duplicates }
+    }
+}
 
-class FunctionalDiversity(CrowdingDiversity):
+impl CrowdingFunction for FunctionalDiversity {
+    /// Mirrors `FunctionalDiversity._do(F, **kwargs)`.
+    fn do_crowd(&self, f: &Array2<f64>, n_remove: usize) -> Array1<f64> {
+        let n_points = f.nrows();
 
-    def __init__(self, function=None, filter_out_duplicates=True):
-        self.function = function
-        self.filter_out_duplicates = filter_out_duplicates
-        super().__init__()
+        if n_points <= 2 {
+            return Array1::from_elem(n_points, f64::INFINITY);
+        }
 
-    def _do(self, F, **kwargs):
+        let is_unique: Vec<usize> = if self.filter_out_duplicates {
+            let dups = find_duplicates(f, Some(1e-32_f64));
+            (0..n_points).filter(|&i| !dups[i]).collect()
+        } else {
+            (0..n_points).collect()
+        };
 
-        n_points, n_obj = F.shape
+        let f_unique = f.select(Axis(0), &is_unique);
+        let d_unique = (self.function)(&f_unique, n_remove);
 
-        if n_points <= 2:
-            return np.full(n_points, np.inf)
+        let mut d = Array1::<f64>::zeros(n_points);
+        for (k, &i) in is_unique.iter().enumerate() {
+            d[i] = d_unique[k];
+        }
 
-        else:
+        d
+    }
+}
 
-            if self.filter_out_duplicates:
-                # filter out solutions which are duplicates - duplicates get a zero finally
-                is_unique = np.where(np.logical_not(find_duplicates(F, epsilon=1e-32)))[0]
-            else:
-                # set every point to be unique without checking it
-                is_unique = np.arange(n_points)
+// -------------------------------------------------------------------------------------------------
+// FuncionalDiversityMNN (note: original Python typo preserved)
+// -------------------------------------------------------------------------------------------------
 
-            # index the unique points of the array
-            _F = F[is_unique]
+/// Mirrors `pymoo.operators.survival.rank_and_crowding.metrics.FuncionalDiversityMNN`.
+pub struct FuncionalDiversityMNN {
+    pub inner: FunctionalDiversity,
+}
 
-            _d = self.function(_F, **kwargs)
+impl FuncionalDiversityMNN {
+    pub fn new(function: CrowdFn, filter_out_duplicates: bool) -> Self {
+        Self { inner: FunctionalDiversity::new(function, filter_out_duplicates) }
+    }
+}
 
-            d = np.zeros(n_points)
-            d[is_unique] = _d
+impl CrowdingFunction for FuncionalDiversityMNN {
+    /// Mirrors `FuncionalDiversityMNN._do(F, **kwargs)`.
+    fn do_crowd(&self, f: &Array2<f64>, n_remove: usize) -> Array1<f64> {
+        let (n_points, n_obj) = f.dim();
+        if n_points <= n_obj {
+            return Array1::from_elem(n_points, f64::INFINITY);
+        }
+        self.inner.do_crowd(f, n_remove)
+    }
+}
 
-        return d
+// -------------------------------------------------------------------------------------------------
+// Factory
+// -------------------------------------------------------------------------------------------------
 
+/// Mirrors `pymoo.operators.survival.rank_and_crowding.metrics.get_crowding_function`.
+pub fn get_crowding_function(label: &str) -> Box<dyn CrowdingFunction> {
+    match label {
+        "cd" => Box::new(FunctionalDiversity::new(calc_crowding_distance, false)),
+        "pcd" | "pruning-cd" => Box::new(FunctionalDiversity::new(calc_pcd, true)),
+        "ce" => Box::new(FunctionalDiversity::new(calc_crowding_entropy, true)),
+        "mnn" => Box::new(FuncionalDiversityMNN::new(calc_mnn_fast, true)),
+        "2nn" => Box::new(FuncionalDiversityMNN::new(calc_2nn_fast, true)),
+        _ => panic!("Crowding function not defined"),
+    }
+}
 
-class FuncionalDiversityMNN(FunctionalDiversity):
+// -------------------------------------------------------------------------------------------------
+// calc_crowding_distance
+// -------------------------------------------------------------------------------------------------
 
-    def _do(self, F, **kwargs):
+/// Mirrors `pymoo.operators.survival.rank_and_crowding.metrics.calc_crowding_distance`.
+pub fn calc_crowding_distance(f: &Array2<f64>, _n_remove: usize) -> Array1<f64> {
+    let (n_points, n_obj) = f.dim();
 
-        n_points, n_obj = F.shape
+    // I = np.argsort(F, axis=0, kind='mergesort')
+    let mut big_i = Array2::<usize>::zeros((n_points, n_obj));
+    for j in 0..n_obj {
+        let col = f.column(j);
+        let mut indices: Vec<usize> = (0..n_points).collect();
+        indices.sort_by(|&a, &b| col[a].partial_cmp(&col[b]).unwrap_or(Ordering::Equal));
+        for (i, &idx) in indices.iter().enumerate() {
+            big_i[[i, j]] = idx;
+        }
+    }
 
-        if n_points <= n_obj:
-            return np.full(n_points, np.inf)
+    // F = F[I, np.arange(n_obj)]  — sort each column independently
+    let mut sorted_f = Array2::<f64>::zeros((n_points, n_obj));
+    for i in 0..n_points {
+        for j in 0..n_obj {
+            sorted_f[[i, j]] = f[[big_i[[i, j]], j]];
+        }
+    }
 
-        else:
-            return super()._do(F, **kwargs)
+    // dist shape (n+1, n_obj): differences between consecutive sorted rows
+    // with -inf and +inf boundaries.
+    let mut dist = Array2::<f64>::zeros((n_points + 1, n_obj));
+    for j in 0..n_obj {
+        dist[[0, j]] = f64::INFINITY;
+        for i in 1..n_points {
+            dist[[i, j]] = sorted_f[[i, j]] - sorted_f[[i - 1, j]];
+        }
+        dist[[n_points, j]] = f64::INFINITY;
+    }
 
+    // norm = max - min per objective; 0 → NaN (so division gives NaN → replaced with 0)
+    let mut norm = Array1::<f64>::zeros(n_obj);
+    for j in 0..n_obj {
+        let col = sorted_f.column(j);
+        let max_v = col.fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let min_v = col.fold(f64::INFINITY, |a, &b| a.min(b));
+        let r = max_v - min_v;
+        norm[j] = if r == 0.0 { f64::NAN } else { r };
+    }
 
-def calc_crowding_distance(F, **kwargs):
-    n_points, n_obj = F.shape
+    // dist_to_last = dist[:-1] / norm;  dist_to_next = dist[1:] / norm
+    let mut dist_to_last = dist.slice(s![..n_points, ..]).to_owned();
+    let mut dist_to_next = dist.slice(s![1.., ..]).to_owned();
+    for j in 0..n_obj {
+        for i in 0..n_points {
+            dist_to_last[[i, j]] /= norm[j];
+            dist_to_next[[i, j]] /= norm[j];
+        }
+    }
+    dist_to_last.mapv_inplace(|v| if v.is_nan() { 0.0 } else { v });
+    dist_to_next.mapv_inplace(|v| if v.is_nan() { 0.0 } else { v });
 
-    # sort each column and get index
-    I = np.argsort(F, axis=0, kind='mergesort')
+    // J = np.argsort(I, axis=0)  — inverse permutation
+    let mut big_j = Array2::<usize>::zeros((n_points, n_obj));
+    for j in 0..n_obj {
+        for i in 0..n_points {
+            big_j[[big_i[[i, j]], j]] = i;
+        }
+    }
 
-    # sort the objective space values for the whole matrix
-    F = F[I, np.arange(n_obj)]
+    // cd[k] = sum_j( dist_to_last[J[k,j], j] + dist_to_next[J[k,j], j] ) / n_obj
+    let mut cd = Array1::<f64>::zeros(n_points);
+    for k in 0..n_points {
+        let mut sum = 0.0;
+        for j in 0..n_obj {
+            let rank = big_j[[k, j]];
+            sum += dist_to_last[[rank, j]] + dist_to_next[[rank, j]];
+        }
+        cd[k] = sum / n_obj as f64;
+    }
 
-    # calculate the distance from each point to the last and next
-    dist = np.vstack([F, np.full(n_obj, np.inf)]) - np.vstack([np.full(n_obj, -np.inf), F])
+    cd
+}
 
-    # calculate the norm for each objective - set to NaN if all values are equal
-    norm = np.max(F, axis=0) - np.min(F, axis=0)
-    norm[norm == 0] = np.nan
+// -------------------------------------------------------------------------------------------------
+// calc_crowding_entropy
+// -------------------------------------------------------------------------------------------------
 
-    # prepare the distance to last and next vectors
-    dist_to_last, dist_to_next = dist, np.copy(dist)
-    dist_to_last, dist_to_next = dist_to_last[:-1] / norm, dist_to_next[1:] / norm
+/// Mirrors `pymoo.operators.survival.rank_and_crowding.metrics.calc_crowding_entropy`.
+pub fn calc_crowding_entropy(f: &Array2<f64>, _n_remove: usize) -> Array1<f64> {
+    let (n_points, n_obj) = f.dim();
 
-    # if we divide by zero because all values in one columns are equal replace by none
-    dist_to_last[np.isnan(dist_to_last)] = 0.0
-    dist_to_next[np.isnan(dist_to_next)] = 0.0
+    let mut big_i = Array2::<usize>::zeros((n_points, n_obj));
+    for j in 0..n_obj {
+        let col = f.column(j);
+        let mut indices: Vec<usize> = (0..n_points).collect();
+        indices.sort_by(|&a, &b| col[a].partial_cmp(&col[b]).unwrap_or(Ordering::Equal));
+        for (i, &idx) in indices.iter().enumerate() {
+            big_i[[i, j]] = idx;
+        }
+    }
 
-    # sum up the distance to next and last and norm by objectives - also reorder from sorted list
-    J = np.argsort(I, axis=0)
-    cd = np.sum(dist_to_last[J, np.arange(n_obj)] + dist_to_next[J, np.arange(n_obj)], axis=1) / n_obj
+    let mut sorted_f = Array2::<f64>::zeros((n_points, n_obj));
+    for i in 0..n_points {
+        for j in 0..n_obj {
+            sorted_f[[i, j]] = f[[big_i[[i, j]], j]];
+        }
+    }
 
-    return cd
+    let mut dist = Array2::<f64>::zeros((n_points + 1, n_obj));
+    for j in 0..n_obj {
+        dist[[0, j]] = f64::INFINITY;
+        for i in 1..n_points {
+            dist[[i, j]] = sorted_f[[i, j]] - sorted_f[[i - 1, j]];
+        }
+        dist[[n_points, j]] = f64::INFINITY;
+    }
 
+    let mut norm = Array1::<f64>::zeros(n_obj);
+    for j in 0..n_obj {
+        let col = sorted_f.column(j);
+        let max_v = col.fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        let min_v = col.fold(f64::INFINITY, |a, &b| a.min(b));
+        let r = max_v - min_v;
+        norm[j] = if r == 0.0 { f64::NAN } else { r };
+    }
 
-def calc_crowding_entropy(F, **kwargs):
-    """Wang, Y.-N., Wu, L.-H. & Yuan, X.-F., 2010. Multi-objective self-adaptive differential 
-    evolution with elitist archive and crowding entropy-based diversity measure. 
-    Soft Comput., 14(3), pp. 193-209.
+    let mut dl = dist.slice(s![..n_points, ..]).to_owned();
+    let mut du = dist.slice(s![1.., ..]).to_owned();
+    dl.mapv_inplace(|v| if v.is_nan() { 0.0 } else { v });
+    du.mapv_inplace(|v| if v.is_nan() { 0.0 } else { v });
 
-    Parameters
-    ----------
-    F : 2d array like
-        Objective functions.
+    let cd = &dl + &du;
 
-    Returns
-    -------
-    ce : 1d array
-        Crowding Entropies
-    """
-    n_points, n_obj = F.shape
+    // entropy shape (n_points, n_obj): inf at boundaries, -(pl*log2(pl)+pu*log2(pu)) interior
+    let mut entropy = Array2::<f64>::zeros((n_points, n_obj));
+    for j in 0..n_obj {
+        entropy[[0, j]] = f64::INFINITY;
+        entropy[[n_points - 1, j]] = f64::INFINITY;
+    }
+    if n_points > 2 {
+        let cd_interior = cd.slice(s![1..n_points - 1, ..]).to_owned();
+        let pl = dl.slice(s![1..n_points - 1, ..]).to_owned() / &cd_interior;
+        let pu = du.slice(s![1..n_points - 1, ..]).to_owned() / &cd_interior;
+        for i in 1..n_points - 1 {
+            for j in 0..n_obj {
+                let p_l = pl[[i - 1, j]];
+                let p_u = pu[[i - 1, j]];
+                entropy[[i, j]] = -(p_l * p_l.log2() + p_u * p_u.log2());
+            }
+        }
+    }
 
-    # sort each column and get index
-    I = np.argsort(F, axis=0, kind='mergesort')
+    let mut big_j = Array2::<usize>::zeros((n_points, n_obj));
+    for j in 0..n_obj {
+        for i in 0..n_points {
+            big_j[[big_i[[i, j]], j]] = i;
+        }
+    }
 
-    # sort the objective space values for the whole matrix
-    F = F[I, np.arange(n_obj)]
+    // _cej[k] = sum_j( cd[J[k,j],j] * entropy[J[k,j],j] / norm[j] )  — NaN → 0
+    let mut ce = Array1::<f64>::zeros(n_points);
+    for k in 0..n_points {
+        let mut sum = 0.0;
+        for j in 0..n_obj {
+            let rank = big_j[[k, j]];
+            let v = cd[[rank, j]] * entropy[[rank, j]] / norm[j];
+            sum += if v.is_nan() { 0.0 } else { v };
+        }
+        ce[k] = sum;
+    }
 
-    # calculate the distance from each point to the last and next
-    dist = np.vstack([F, np.full(n_obj, np.inf)]) - np.vstack([np.full(n_obj, -np.inf), F])
+    ce
+}
 
-    # calculate the norm for each objective - set to NaN if all values are equal
-    norm = np.max(F, axis=0) - np.min(F, axis=0)
-    norm[norm == 0] = np.nan
+// -------------------------------------------------------------------------------------------------
+// calc_mnn_fast / calc_2nn_fast
+// -------------------------------------------------------------------------------------------------
 
-    # prepare the distance to last and next vectors
-    dl = dist.copy()[:-1]
-    du = dist.copy()[1:]
+fn calc_mnn_fast_impl(f: &Array2<f64>, n_neighbors: usize) -> Array1<f64> {
+    let (n_points, n_obj) = f.dim();
 
-    # Fix nan
-    dl[np.isnan(dl)] = 0.0
-    du[np.isnan(du)] = 0.0
+    // normalize: (F - min) / (max - min), with (max-min)==0 treated as 1
+    let max_v = f.map_axis(Axis(0), |col| col.fold(f64::NEG_INFINITY, |a, &b| a.max(b)));
+    let min_v = f.map_axis(Axis(0), |col| col.fold(f64::INFINITY, |a, &b| a.min(b)));
+    let norm = (&max_v - &min_v).mapv(|v| if v == 0.0 { 1.0 } else { v });
+    let f_norm = (f - &min_v) / &norm;
 
-    # Total distance
-    cd = dl + du
+    // pairwise squared euclidean distances — mirrors squareform(pdist(F, "sqeuclidean"))
+    let mut dist_mat = Array2::<f64>::zeros((n_points, n_points));
+    for i in 0..n_points {
+        for j in 0..n_points {
+            let d: f64 = f_norm
+                .row(i)
+                .iter()
+                .zip(f_norm.row(j).iter())
+                .map(|(a, b)| (a - b).powi(2))
+                .sum();
+            dist_mat[[i, j]] = d;
+        }
+    }
 
-    # Get relative positions
-    pl = (dl[1:-1] / cd[1:-1])
-    pu = (du[1:-1] / cd[1:-1])
+    // for each row: sort, skip self-distance (index 0), take n_neighbors smallest, product
+    // mirrors: _D = np.partition(D, range(1, M+1), axis=1)[:, 1:M+1]; d = np.prod(_D, axis=1)
+    let mut d = Array1::<f64>::ones(n_points);
+    for i in 0..n_points {
+        let mut row: Vec<f64> = dist_mat.row(i).to_vec();
+        row.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+        let take = n_neighbors.min(row.len().saturating_sub(1));
+        d[i] = row[1..=take].iter().product();
+    }
 
-    # Entropy
-    entropy = np.vstack([np.full(n_obj, np.inf),
-                         -(pl * np.log2(pl) + pu * np.log2(pu)),
-                         np.full(n_obj, np.inf)])
+    // set extremes (argmin/argmax per objective) to inf
+    for j in 0..n_obj {
+        let col = f_norm.column(j);
+        let amin = col
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let amax = col
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        d[amin] = f64::INFINITY;
+        d[amax] = f64::INFINITY;
+    }
 
-    # Crowding entropy
-    J = np.argsort(I, axis=0)
-    _cej = cd[J, np.arange(n_obj)] * entropy[J, np.arange(n_obj)] / norm
-    _cej[np.isnan(_cej)] = 0.0
-    ce = _cej.sum(axis=1)
+    d
+}
 
-    return ce
+/// Mirrors `pymoo.operators.survival.rank_and_crowding.metrics.calc_mnn_fast`.
+pub fn calc_mnn_fast(f: &Array2<f64>, _n_remove: usize) -> Array1<f64> {
+    calc_mnn_fast_impl(f, f.ncols())
+}
 
-
-def calc_mnn_fast(F, **kwargs):
-    return _calc_mnn_fast(F, F.shape[1], **kwargs)
-
-
-def calc_2nn_fast(F, **kwargs):
-    return _calc_mnn_fast(F, 2, **kwargs)
-
-
-def _calc_mnn_fast(F, n_neighbors, **kwargs):
-
-    # calculate the norm for each objective - set to NaN if all values are equal
-    norm = np.max(F, axis=0) - np.min(F, axis=0)
-    norm[norm == 0] = 1.0
-
-    # F normalized
-    F = (F - F.min(axis=0)) / norm
-
-    # Distances pairwise (Inefficient)
-    D = squareform(pdist(F, metric="sqeuclidean"))
-
-    # M neighbors
-    M = F.shape[1]
-    _D = np.partition(D, range(1, M+1), axis=1)[:, 1:M+1]
-
-    # Metric d
-    d = np.prod(_D, axis=1)
-
-    # Set top performers as np.inf
-    _extremes = np.concatenate((np.argmin(F, axis=0), np.argmax(F, axis=0)))
-    d[_extremes] = np.inf
-
-    return d
+/// Mirrors `pymoo.operators.survival.rank_and_crowding.metrics.calc_2nn_fast`.
+pub fn calc_2nn_fast(f: &Array2<f64>, _n_remove: usize) -> Array1<f64> {
+    calc_mnn_fast_impl(f, 2)
+}

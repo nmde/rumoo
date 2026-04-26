@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use anyhow::{Result, anyhow};
 use ndarray::{Array1, Array2, Axis};
 use ndarray_linalg::Solve;
@@ -219,8 +221,8 @@ impl Normalization for SimpleZeroToOneNormalization {
 
     /// Mirrors `SimpleZeroToOneNormalization.backward(X)`.
     fn backward(&self, x: &Array2<f64>) -> Array2<f64> {
-        let xl = self.xl.as_ref().expect("xl required for backward");
-        let xu = self.xu.as_ref().expect("xu required for backward");
+        let xl = self.xl.as_ref()?;
+        let xu = self.xu.as_ref()?;
         x * &(xu - xl) + xl
     }
 }
@@ -370,7 +372,7 @@ pub fn get_extreme_points_c(
                 .row(i)
                 .iter()
                 .enumerate()
-                .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
                 .map(|(idx, _)| idx)
                 .unwrap_or(0)
         })

@@ -151,8 +151,8 @@ impl Dominator {
         }
 
         // reshape flat bool arrays to (n, m)
-        let smaller = smaller_flat.into_shape((n, m)).expect("reshape smaller");
-        let larger = larger_flat.into_shape((n, m)).expect("reshape larger");
+        let smaller = smaller_flat.into_shape((n, m))?;
+        let larger = larger_flat.into_shape((n, m))?;
 
         // M = (smaller & !larger) * 1 + (larger & !smaller) * -1
         Array2::from_shape_fn((n, m), |(i, j)| {

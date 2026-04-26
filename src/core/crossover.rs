@@ -151,9 +151,7 @@ pub trait Crossover: Operator {
         // Flatten (n_offsprings, n_matings, n_var) → (n_offsprings * n_matings, n_var).
         // Mirrors: Xp = Xp.reshape(-1, X.shape[-1])
         let n_total = n_offsprings * n_matings;
-        let xp_2d = xp
-            .into_shape((n_total, n_var))
-            .expect("crossover reshape failed");
+        let xp_2d = xp.into_shape((n_total, n_var))?;
 
         // Mirrors: off = Population.new("X", Xp)
         Ok(Population::new_with_attrs(&[(

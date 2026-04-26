@@ -108,9 +108,7 @@ impl Selection for TournamentSelection {
         _to_pop: Option<bool>,
         random_state: Option<&mut StdRng>,
     ) -> SelectionResult {
-        let indices = self
-            ._do_tournament(pop, n_select, Some(n_parents), random_state)
-            .expect("tournament selection failed");
+        let indices = self._do_tournament(pop, n_select, Some(n_parents), random_state)?;
         SelectionResult::Indices(indices)
     }
 }
