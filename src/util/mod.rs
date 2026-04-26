@@ -5,6 +5,7 @@ pub mod dominator;
 pub mod misc;
 pub mod nds;
 pub mod optimum;
+pub mod sliding_window;
 
 pub fn default_random_state() -> StdRng {
     make_rng()
