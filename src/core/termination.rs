@@ -1,70 +1,179 @@
-from abc import abstractmethod
+use crate::core::algorithm::Algorithm;
 
+/// Instance state for all `Termination` implementations.
+///
+/// Mirrors the `__init__` fields of `pymoo.core.termination.Termination`.
+pub struct TerminationBase {
+    pub force_termination: bool,
+    pub perc: f64,
+}
 
-class Termination:
+impl TerminationBase {
+    pub fn new() -> Self {
+        Self {
+            force_termination: false,
+            perc: 0.0,
+        }
+    }
+}
 
-    def __init__(self) -> None:
-        super().__init__()
+/// Termination criterion for an optimization run.
+///
+/// Mirrors `pymoo.core.termination.Termination`.
+pub trait Termination {
+    fn base(&self) -> &TerminationBase;
+    fn base_mut(&mut self) -> &mut TerminationBase;
 
-        # the algorithm can be forced to terminate by setting this attribute to true
-        self.force_termination = False
+    /// Update the stored progress and return it.
+    ///
+    /// Mirrors `Termination.update(algorithm)`.
+    fn update(&mut self, algorithm: &mut dyn Algorithm) -> f64 {
+        let progress = if self.base().force_termination {
+            1.0
+        } else {
+            let p = self._update(algorithm);
+            assert!(p >= 0.0, "Invalid progress was set by the TerminationCriterion.");
+            p
+        };
+        self.base_mut().perc = progress;
+        self.base().perc
+    }
 
-        # the value indicating how much perc has been made
-        self.perc = 0.0
+    /// Mirrors `Termination.has_terminated()`.
+    fn has_terminated(&self) -> bool {
+        self.base().perc >= 1.0
+    }
 
-    def update(self, algorithm):
-        """
-        Provide the termination criterion a current status of the algorithm to update the perc.
+    /// Mirrors `Termination.do_continue()`.
+    fn do_continue(&self) -> bool {
+        !self.has_terminated()
+    }
 
-        Parameters
-        ----------
-        algorithm : object
-            The algorithm object which is used to determine whether a run has terminated.
-        """
+    /// Force the run to terminate on the next call to `update`.
+    ///
+    /// Mirrors `Termination.terminate()`.
+    fn terminate(&mut self) {
+        self.base_mut().force_termination = true;
+    }
 
-        if self.force_termination:
-            progress = 1.0
-        else:
-            progress = self._update(algorithm)
-            assert progress >= 0.0, "Invalid progress was set by the TerminationCriterion."
+    /// Compute and return the current progress in `[0.0, 1.0]`.
+    ///
+    /// Mirrors `Termination._update(algorithm)` — must be implemented by
+    /// concrete types.
+    fn _update(&mut self, algorithm: &mut dyn Algorithm) -> f64;
+}
 
-        self.perc = progress
-        return self.perc
+/// Never terminates; progress is always `0.0`.
+///
+/// Mirrors `pymoo.core.termination.NoTermination(Termination)`.
+pub struct NoTermination {
+    pub base: TerminationBase,
+}
 
-    def has_terminated(self):
-        return self.perc >= 1.0
+impl NoTermination {
+    pub fn new() -> Self {
+        Self {
+            base: TerminationBase::new(),
+        }
+    }
+}
 
-    def do_continue(self):
-        return not self.has_terminated()
+impl Termination for NoTermination {
+    fn base(&self) -> &TerminationBase {
+        &self.base
+    }
 
-    def terminate(self):
-        self.force_termination = True
+    fn base_mut(&mut self) -> &mut TerminationBase {
+        &mut self.base
+    }
 
-    @abstractmethod
-    def _update(self, algorithm):
-        pass
+    fn _update(&mut self, _algorithm: &mut dyn Algorithm) -> f64 {
+        0.0
+    }
+}
 
+/// Shared state for composite termination criteria.
+///
+/// Mirrors `pymoo.core.termination.MultipleCriteria(Termination)`.
+pub struct MultipleCriteriaBase {
+    pub base: TerminationBase,
+    pub criteria: Vec<Box<dyn Termination>>,
+}
 
-class NoTermination(Termination):
+impl MultipleCriteriaBase {
+    /// Mirrors `MultipleCriteria.__init__(*args)`.
+    pub fn new(criteria: Vec<Box<dyn Termination>>) -> Self {
+        Self {
+            base: TerminationBase::new(),
+            criteria,
+        }
+    }
+}
 
-    def _update(self, algorithm):
-        return 0.0
+/// Terminates as soon as any one criterion is satisfied.
+///
+/// Mirrors `pymoo.core.termination.TerminateIfAny(MultipleCriteria)`:
+/// `max([t.update(algorithm) for t in self.criteria])`.
+pub struct TerminateIfAny {
+    pub mc: MultipleCriteriaBase,
+}
 
+impl TerminateIfAny {
+    pub fn new(criteria: Vec<Box<dyn Termination>>) -> Self {
+        Self {
+            mc: MultipleCriteriaBase::new(criteria),
+        }
+    }
+}
 
-class MultipleCriteria(Termination):
+impl Termination for TerminateIfAny {
+    fn base(&self) -> &TerminationBase {
+        &self.mc.base
+    }
 
-    def __init__(self, *args) -> None:
-        super().__init__()
-        self.criteria = args
+    fn base_mut(&mut self) -> &mut TerminationBase {
+        &mut self.mc.base
+    }
 
+    fn _update(&mut self, algorithm: &mut dyn Algorithm) -> f64 {
+        self.mc
+            .criteria
+            .iter_mut()
+            .map(|t| t.update(algorithm))
+            .fold(0.0_f64, |a, b| a.max(b))
+    }
+}
 
-class TerminateIfAny(MultipleCriteria):
+/// Terminates only once every criterion is satisfied.
+///
+/// Mirrors `pymoo.core.termination.TerminateIfAll(MultipleCriteria)`:
+/// `min([t.update(algorithm) for t in self.criteria])`.
+pub struct TerminateIfAll {
+    pub mc: MultipleCriteriaBase,
+}
 
-    def _update(self, algorithm):
-        return max([termination.update(algorithm) for termination in self.criteria])
+impl TerminateIfAll {
+    pub fn new(criteria: Vec<Box<dyn Termination>>) -> Self {
+        Self {
+            mc: MultipleCriteriaBase::new(criteria),
+        }
+    }
+}
 
+impl Termination for TerminateIfAll {
+    fn base(&self) -> &TerminationBase {
+        &self.mc.base
+    }
 
-class TerminateIfAll(MultipleCriteria):
+    fn base_mut(&mut self) -> &mut TerminationBase {
+        &mut self.mc.base
+    }
 
-    def _update(self, algorithm):
-        return min([termination.update(algorithm) for termination in self.criteria])
+    fn _update(&mut self, algorithm: &mut dyn Algorithm) -> f64 {
+        self.mc
+            .criteria
+            .iter_mut()
+            .map(|t| t.update(algorithm))
+            .fold(f64::INFINITY, |a, b| a.min(b))
+    }
+}

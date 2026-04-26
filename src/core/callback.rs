@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::core::individual::Value;
+use crate::core::{algorithm::Algorithm, individual::Value};
 
 /// Instance data for a `Callback`.
 ///

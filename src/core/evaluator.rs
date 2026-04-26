@@ -1,116 +1,242 @@
-import numpy as np
+use ndarray::Array1;
 
-from pymoo.core.individual import Individual
-from pymoo.core.population import Population
-from pymoo.core.problem import Problem
+use crate::core::{
+    algorithm::Algorithm,
+    callback::Callback,
+    individual::{IndividualField, Value},
+    population::Population,
+    problem::Problem,
+};
 
+/// Instance fields shared by all `Evaluator` implementations.
+///
+/// Mirrors the `__init__` attributes of `pymoo.core.evaluator.Evaluator`.
+pub struct EvaluatorBase {
+    pub evaluate_values_of: Vec<IndividualField>,
+    pub skip_already_evaluated: bool,
+    pub callback: Option<Box<dyn Callback>>,
+    pub n_eval: usize,
+}
 
-class Evaluator:
+impl EvaluatorBase {
+    /// Mirrors `Evaluator.__init__(skip_already_evaluated, evaluate_values_of, callback)`.
+    pub fn new(
+        skip_already_evaluated: Option<bool>,
+        evaluate_values_of: Option<Vec<IndividualField>>,
+        callback: Option<Box<dyn Callback>>,
+    ) -> Self {
+        Self {
+            evaluate_values_of: evaluate_values_of.unwrap_or_else(|| {
+                vec![IndividualField::F, IndividualField::G, IndividualField::H]
+            }),
+            skip_already_evaluated: skip_already_evaluated.unwrap_or(true),
+            callback,
+            n_eval: 0,
+        }
+    }
+}
 
-    def __init__(self,
-                 skip_already_evaluated: bool = True,
-                 evaluate_values_of: list = ["F", "G", "H"],
-                 callback=None):
+/// Glues a `Problem` to a `Population`, tracking function-evaluation counts.
+///
+/// Mirrors `pymoo.core.evaluator.Evaluator`.
+pub trait Evaluator {
+    fn base(&self) -> &EvaluatorBase;
+    fn base_mut(&mut self) -> &mut EvaluatorBase;
 
-        """
-        The evaluator has the purpose to glue the problem with the population/individual objects.
-        Additionally, it serves as a bookkeeper to store determine the number of function evaluations of runs, time,
-        and others.
+    /// Current total number of objective-function evaluations.
+    ///
+    /// Mirrors `Evaluator.n_eval`.
+    fn n_eval(&self) -> usize {
+        self.base().n_eval
+    }
 
+    /// Evaluate the population, optionally skipping already-evaluated individuals.
+    ///
+    /// Mirrors `Evaluator.eval(problem, pop, skip_already_evaluated, evaluate_values_of,
+    /// count_evals, **kwargs)`.
+    fn eval(
+        &mut self,
+        problem: &dyn Problem,
+        pop: &mut Population,
+        skip_already_evaluated: Option<bool>,
+        evaluate_values_of: Option<&[IndividualField]>,
+        count_evals: Option<bool>,
+    ) -> &mut Population {
+        let count_evals = count_evals.unwrap_or(true);
+        let evaluate_values_of = evaluate_values_of.unwrap_or(self.base().evaluate_values_of.clone());
+        let skip_already_evaluated = skip_already_evaluated.unwrap_or(self.base().skip_already_evaluated);
 
-        Parameters
-        ----------
-        skip_already_evaluated : bool
-            If individual that are already evaluated shall be skipped.
+        // Mirrors: I = [i for i, ind in enumerate(pop)
+        //               if not all(e in ind.evaluated for e in evaluate_values_of)]
+        let indices: Vec<usize> = if skip_already_evaluated {
+            (0..pop.len())
+                .filter(|&i| {
+                    !evaluate_values_of
+                        .iter()
+                        .all(|field| pop[i].evaluated.contains(field))
+                })
+                .collect()
+        } else {
+            (0..pop.len()).collect()
+        };
 
-        evaluate_values_of : list
-            The type of values to be asked the problem to evaluated. By default all objective, ieq. and eq. constraints.
+        if !indices.is_empty() {
+            // Mirrors: self._eval(problem, pop[I], evaluate_values_of)
+            let mut sub_pop = pop.select(&indices);
+            self._eval(problem, &mut sub_pop, &evaluate_values_of);
+            // Write evaluated individuals back into the original population.
+            for (sub_i, &orig_i) in indices.iter().enumerate() {
+                pop[orig_i] = sub_pop[sub_i].clone();
+            }
+        }
 
-        """
+        // Mirrors: if count_evals: self.n_eval += len(I)
+        if count_evals {
+            self.base_mut().n_eval += indices.len();
+        }
 
-        self.evaluate_values_of = evaluate_values_of
-        self.skip_already_evaluated = skip_already_evaluated
-        self.callback = callback
+        // Mirrors: if self.callback: self.callback(pop)
+        if let Some(ref cb) = self.base().callback {
+            cb(pop);
+        }
 
-        # current number of function evaluations - initialized to zero
-        self.n_eval = 0
+        pop
+    }
 
-    def eval(self,
-             problem: Problem,
-             pop: Population,
-             skip_already_evaluated: bool = None,
-             evaluate_values_of: list = None,
-             count_evals: bool = True,
-             **kwargs):
+    /// Perform the actual problem evaluation and write outputs back into `pop`.
+    ///
+    /// Mirrors `Evaluator._eval(problem, pop, evaluate_values_of, **kwargs)`.
+    fn _eval(
+        &mut self,
+        problem: &dyn Problem,
+        pop: &mut Population,
+        evaluate_values_of: &[IndividualField],
+    ) {
+        // Mirrors: X = pop.get("X")
+        let x = pop.get(&IndividualField::X);
 
-        # load the default settings from the evaluator object if not already provided
-        evaluate_values_of = self.evaluate_values_of if evaluate_values_of is None else evaluate_values_of
-        skip_already_evaluated = self.skip_already_evaluated if skip_already_evaluated is None else skip_already_evaluated
+        // Mirrors: out = problem.evaluate(X, return_values_of=…, return_as_dictionary=True)
+        let out = problem.evaluate(x, evaluate_values_of);
 
-        # check the type of the input
-        is_individual = isinstance(pop, Individual)
+        // Mirrors: for key, val in out.items(): if val is not None: pop.set(key, val)
+        for (key, val) in out {
+            if let Some(v) = val {
+                pop.set(&key, v);
+            }
+        }
 
-        # make sure the object is a population
-        if is_individual:
-            pop = Population().create(pop)
+        // Mirrors: pop.apply(lambda ind: ind.evaluated.update(out.keys()))
+        for ind in pop.iter_mut() {
+            for field in evaluate_values_of {
+                ind.evaluated.insert(field.clone());
+            }
+        }
+    }
+}
 
-        # filter the index to have individual where not all attributes have been evaluated
-        if skip_already_evaluated:
-            I = [i for i, ind in enumerate(pop) if not all([e in ind.evaluated for e in evaluate_values_of])]
+/// Default evaluator — uses all `Evaluator` trait defaults.
+///
+/// Mirrors `pymoo.core.evaluator.Evaluator` used directly (not subclassed).
+pub struct DefaultEvaluator {
+    pub base: EvaluatorBase,
+}
 
-        # if skipping is deactivated simply make the index being all individuals
-        else:
-            I = np.arange(len(pop))
+impl DefaultEvaluator {
+    pub fn new() -> Self {
+        Self {
+            base: EvaluatorBase::new(None, None, None),
+        }
+    }
+}
 
-        # evaluate the solutions (if there are any)
-        if len(I) > 0:
+impl Evaluator for DefaultEvaluator {
+    fn base(&self) -> &EvaluatorBase {
+        &self.base
+    }
 
-            # do the actual evaluation - call the sub-function to set the corresponding values to the population
-            self._eval(problem, pop[I], evaluate_values_of, **kwargs)
+    fn base_mut(&mut self) -> &mut EvaluatorBase {
+        &mut self.base
+    }
+}
 
-        # update the function evaluation counter
-        if count_evals:
-            self.n_eval += len(I)
+/// Fills all unevaluated individuals with a constant value without calling
+/// the problem's evaluation function.
+///
+/// Mirrors `pymoo.core.evaluator.VoidEvaluator(Evaluator)`.
+pub struct VoidEvaluator {
+    pub base: EvaluatorBase,
+    /// The fill value; `None` means do nothing.
+    ///
+    /// Mirrors `VoidEvaluator.value` (default `np.inf`).
+    pub value: Option<f64>,
+}
 
-        # allow to have a callback registered
-        if self.callback:
-            self.callback(pop)
+impl VoidEvaluator {
+    /// Mirrors `VoidEvaluator.__init__(value=np.inf, **kwargs)`.
+    pub fn new(value: Option<f64>) -> Self {
+        Self {
+            base: EvaluatorBase::new(None, None, None),
+            value: Some(value.unwrap_or(f64::INFINITY)),
+        }
+    }
+}
 
-        if is_individual:
-            return pop[0]
-        else:
-            return pop
+impl Evaluator for VoidEvaluator {
+    fn base(&self) -> &EvaluatorBase {
+        &self.base
+    }
 
-    def _eval(self, problem, pop, evaluate_values_of, **kwargs):
+    fn base_mut(&mut self) -> &mut EvaluatorBase {
+        &mut self.base
+    }
 
-        # get the design space value from the individuals
-        X = pop.get("X")
+    /// Mirrors `VoidEvaluator.eval(problem, pop, **kwargs)`.
+    fn eval(
+        &mut self,
+        problem: &dyn Problem,
+        pop: &mut Population,
+        _algorithm: &mut dyn Algorithm,
+    ) {
+        let val = match self.value {
+            None => return,
+            Some(v) => v,
+        };
 
-        # call the problem to evaluate the solutions
-        out = problem.evaluate(X, return_values_of=evaluate_values_of, return_as_dictionary=True, **kwargs)
+        let n_obj = problem.n_obj();
+        let n_ieq = problem.n_ieq_constr();
+        let n_eq = problem.n_eq_constr();
 
-        # for each of the attributes set it to the problem
-        for key, val in out.items():
-            if val is not None:
-                pop.set(key, val)
+        for ind in pop.iter_mut() {
+            // Mirrors: if len(individual.evaluated) == 0:
+            if ind.evaluated.is_empty() {
+                ind.f = Some(Array1::from_elem(n_obj, val));
 
-        # finally set all the attributes to be evaluated for all individuals
-        pop.apply(lambda ind: ind.evaluated.update(out.keys()))
+                // Mirrors: np.full(n_ieq_constr, val) if n_ieq_constr > 0 else None
+                ind.g = if n_ieq > 0 {
+                    Some(Array1::from_elem(n_ieq, val))
+                } else {
+                    None
+                };
 
+                // Mirrors: np.full(n_eq_constr, val) if n_eq_constr else None
+                ind.h = if n_eq > 0 {
+                    Some(Array1::from_elem(n_eq, val))
+                } else {
+                    None
+                };
 
-class VoidEvaluator(Evaluator):
+                // Mirrors: individual.CV = [-np.inf]
+                ind.set(
+                    &IndividualField::CV,
+                    Value::FloatArray(Array1::from_elem(1, f64::NEG_INFINITY)),
+                );
 
-    def __init__(self, value=np.inf, **kwargs):
-        super().__init__(**kwargs)
-        self.value = value
-
-    def eval(self, problem, pop, **kwargs):
-        val = self.value
-        if val is not None:
-            for individual in pop:
-                if len(individual.evaluated) == 0:
-                    individual.F = np.full(problem.n_obj, val)
-                    individual.G = np.full(problem.n_ieq_constr, val) if problem.n_ieq_constr > 0 else None
-                    individual.H = np.full(problem.n_eq_constr, val) if problem.n_eq_constr else None
-                    individual.CV = [-np.inf]
-                    individual.feas = [False]
+                // Mirrors: individual.feas = [False]
+                ind.set(
+                    &IndividualField::Feas,
+                    Value::BoolArray(Array1::from_elem(1, false)),
+                );
+            }
+        }
+    }
+}

@@ -12,6 +12,7 @@ use crate::{
         individual::{IndividualField, Value},
         population::Population,
         problem::Problem,
+        termination::Termination,
     },
     util::display::output::Output,
 };

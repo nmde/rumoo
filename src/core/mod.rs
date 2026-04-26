@@ -1,5 +1,6 @@
 pub mod algorithm;
 pub mod callback;
+pub mod evaluator;
 pub mod crossover;
 pub mod individual;
 pub mod mutation;
@@ -9,3 +10,4 @@ pub mod problem;
 pub mod sampling;
 pub mod selection;
 pub mod survival;
+pub mod termination;

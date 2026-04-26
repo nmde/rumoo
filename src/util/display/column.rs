@@ -1,4 +1,4 @@
-use crate::core::individual::Value;
+use crate::core::{algorithm::Algorithm, individual::Value};
 
 /// Callable type for the optional `func` update hook.
 ///
