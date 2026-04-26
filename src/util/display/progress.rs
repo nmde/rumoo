@@ -1,54 +1,98 @@
-import math
+use indicatif::{ProgressBar as InnerBar, ProgressStyle};
 
-from alive_progress import alive_bar
+/// A terminal progress bar that enforces non-decreasing progress.
+///
+/// Wraps `indicatif::ProgressBar` the same way the Python implementation wraps
+/// `alive_progress.alive_bar`.
+///
+/// Mirrors `pymoo.util.display.progress.ProgressBar`.
+pub struct ProgressBar {
+    pub non_decreasing: bool,
+    _max: f64,
+    bar: Option<InnerBar>,
+}
 
+impl ProgressBar {
+    /// Mirrors `ProgressBar.__init__(start=True, non_decreasing=True)`.
+    pub fn new() -> Self {
+        let mut pb = Self {
+            non_decreasing: true,
+            _max: 0.0,
+            bar: None,
+        };
+        pb.start();
+        pb
+    }
 
-class ProgressBar:
+    /// Create without auto-starting; call `start()` explicitly.
+    ///
+    /// Mirrors `ProgressBar.__init__(start=False, ...)`.
+    pub fn new_deferred(non_decreasing: bool) -> Self {
+        Self {
+            non_decreasing,
+            _max: 0.0,
+            bar: None,
+        }
+    }
 
-    def __init__(self, *args, start=True, non_decreasing=True, **kwargs):
-        self.args = args
-        self.kwargs = kwargs
+    /// Update the displayed progress.
+    ///
+    /// When `non_decreasing` is set, the value is clamped to the running
+    /// maximum so the bar never moves backwards.
+    ///
+    /// Mirrors `ProgressBar.set(value)`:
+    /// ```python
+    /// prec = 100
+    /// value = math.floor(value * prec) / prec
+    /// self.obj(value)
+    /// ```
+    pub fn set(&mut self, value: f64) {
+        let value = if self.non_decreasing {
+            self._max = self._max.max(value);
+            self._max
+        } else {
+            value
+        };
 
-        for key, default in [("manual", True), ("force_tty", True)]:
-            if key not in kwargs:
-                kwargs[key] = default
+        // Mirrors: prec = 100; value = math.floor(value * prec) / prec
+        // Then scale to indicatif's integer position range (0..=100).
+        let position = (value * 100.0).floor() as u64;
 
-        self.func = None
-        self.obj = None
-        self.non_decreasing = non_decreasing
-        self._max = 0.0
+        if let Some(ref bar) = self.bar {
+            bar.set_position(position);
+        }
+    }
 
-        if start:
-            self.start()
+    /// Create and display the progress bar.
+    ///
+    /// Mirrors `ProgressBar.start()`.
+    pub fn start(&mut self) {
+        if self.bar.is_none() {
+            let bar = InnerBar::new(100);
+            bar.set_style(
+                ProgressStyle::default_bar()
+                    .template("[{bar:40.cyan/blue}] {percent:>3}%")
+                    .unwrap_or_else(|_| ProgressStyle::default_bar())
+                    .progress_chars("=>-"),
+            );
+            self.bar = Some(bar);
+        }
+    }
 
-    def set(self, value, *args, **kwargs):
-        if self.non_decreasing:
-            self._max = max(self._max, value)
-            value = self._max
+    /// Finish and hide the progress bar.
+    ///
+    /// Mirrors `ProgressBar.close()`.
+    pub fn close(&mut self) {
+        // Take ownership so finish() is called at most once.
+        if let Some(bar) = self.bar.take() {
+            bar.finish();
+        }
+    }
+}
 
-        prec = 100
-        value = math.floor(value * prec) / prec
-
-        self.obj(value, *args, **kwargs)
-
-    def start(self):
-
-        if not self.obj:
-            # save the generator to this object
-            self.func = alive_bar(*self.args, **self.kwargs).gen
-
-            # create the bar
-            self.obj = next(self.func)
-
-    def close(self):
-        if self.obj:
-            try:
-                next(self.func)
-            except:
-                pass
-
-    def __enter__(self):
-        self.start()
-
-    def __exit__(self, type, value, traceback):
-        self.close()
+/// Mirrors `ProgressBar.__exit__` — close on drop.
+impl Drop for ProgressBar {
+    fn drop(&mut self) {
+        self.close();
+    }
+}

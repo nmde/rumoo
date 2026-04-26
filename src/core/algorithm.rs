@@ -9,12 +9,13 @@ use rand::{SeedableRng, rngs::StdRng};
 use crate::{
     core::{
         callback::{Callback, CallbackCollection},
+        evaluator::Evaluator,
         individual::{IndividualField, Value},
         population::Population,
         problem::Problem,
         termination::Termination,
     },
-    util::display::output::Output,
+    util::display::{display::Display, output::Output},
 };
 
 /// Instance state shared by all `Algorithm` implementations.
