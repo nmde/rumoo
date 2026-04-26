@@ -100,7 +100,7 @@ pub struct Individual {
     cv_cache: RefCell<Option<Array1<f64>>>,
 
     // attributes that have been evaluated (Python: evaluated: set())
-    pub evaluated: HashSet<String>,
+    pub evaluated: HashSet<IndividualField>,
 
     // arbitrary per-individual storage (rank, crowding, etc.) (Python: data: {})
     pub data: HashMap<String, Value>,

@@ -1,163 +1,347 @@
-import numpy as np
+use std::{
+    collections::{HashSet, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+};
 
-from pymoo.util.misc import cdist
+use ndarray::{Array1, Array2};
 
+use crate::{
+    core::{
+        individual::{Individual, IndividualField, Value},
+        population::Population,
+    },
+    util::misc::cdist,
+};
 
-def default_attr(pop):
-    return pop.get("X")
+// -------------------------------------------------------------------------------------------------
+// default_attr
+// -------------------------------------------------------------------------------------------------
 
+/// Mirrors `pymoo.core.duplicate.default_attr`.
+pub fn default_attr(pop: &Population) -> Array2<f64> {
+    match pop.get(&IndividualField::X) {
+        Value::FloatMatrix(m) => m,
+        _ => Array2::zeros((pop.len(), 0)),
+    }
+}
 
-class DuplicateElimination:
+// -------------------------------------------------------------------------------------------------
+// DuplicateResult / DuplicateElimination trait
+// -------------------------------------------------------------------------------------------------
 
-    def __init__(self, func=None) -> None:
-        super().__init__()
-        self.func = func
+/// Return type for `DuplicateElimination::do_elimination`.
+///
+/// Mirrors the two return paths of `DuplicateElimination.do`:
+/// - `return_indices=False` → `Filtered`
+/// - `return_indices=True`  → `WithIndices`
+pub enum DuplicateResult {
+    Filtered(Population),
+    WithIndices {
+        pop: Population,
+        no_duplicate: Vec<usize>,
+        is_duplicate: Vec<usize>,
+    },
+}
 
-        if self.func is None:
-            self.func = default_attr
+/// Mirrors `pymoo.core.duplicate.DuplicateElimination`.
+pub trait DuplicateElimination {
+    /// Mark individuals in `pop` that are duplicates.
+    ///
+    /// Mirrors `DuplicateElimination._do(pop, other, is_duplicate)`.
+    fn _do(&self, pop: &Population, other: Option<&Population>, is_duplicate: &mut Array1<bool>);
 
-    def do(self, pop, *args, return_indices=False, to_itself=True):
-        original = pop
+    /// Filter duplicates from `pop`, optionally checking against extra populations.
+    ///
+    /// Mirrors `DuplicateElimination.do(pop, *args, return_indices, to_itself)`.
+    fn do_elimination(
+        &self,
+        pop: &Population,
+        others: &[&Population],
+        return_indices: bool,
+        to_itself: bool,
+    ) -> DuplicateResult {
+        let original_len = pop.len();
 
-        if len(pop) == 0:
-            return (pop, [], []) if return_indices else pop
+        if original_len == 0 {
+            return if return_indices {
+                DuplicateResult::WithIndices {
+                    pop: Population::empty(0),
+                    no_duplicate: vec![],
+                    is_duplicate: vec![],
+                }
+            } else {
+                DuplicateResult::Filtered(Population::empty(0))
+            };
+        }
 
-        if to_itself:
-            pop = pop[~self._do(pop, None, np.full(len(pop), False))]
+        // surviving holds indices into the original pop that have not yet been eliminated.
+        let mut surviving: Vec<usize> = (0..original_len).collect();
 
-        for arg in args:
-            if len(arg) > 0:
+        // Mirrors: if to_itself: pop = pop[~self._do(pop, None, np.full(len(pop), False))]
+        if to_itself {
+            let sub = pop.select(&surviving);
+            let mut is_dup = Array1::from_elem(surviving.len(), false);
+            self._do(&sub, None, &mut is_dup);
+            surviving = surviving
+                .into_iter()
+                .zip(is_dup.iter())
+                .filter_map(|(idx, &dup)| if !dup { Some(idx) } else { None })
+                .collect();
+        }
 
-                if len(pop) == 0:
-                    break
-                elif len(arg) == 0:
-                    continue
-                else:
-                    pop = pop[~self._do(pop, arg, np.full(len(pop), False))]
+        // Mirrors: for arg in args: pop = pop[~self._do(pop, arg, ...)]
+        for &other in others {
+            if surviving.is_empty() {
+                break;
+            }
+            if other.is_empty() {
+                continue;
+            }
+            let sub = pop.select(&surviving);
+            let mut is_dup = Array1::from_elem(surviving.len(), false);
+            self._do(&sub, Some(other), &mut is_dup);
+            surviving = surviving
+                .into_iter()
+                .zip(is_dup.iter())
+                .filter_map(|(idx, &dup)| if !dup { Some(idx) } else { None })
+                .collect();
+        }
 
-        if return_indices:
-            no_duplicate, is_duplicate = [], []
-            H = set(pop)
+        if return_indices {
+            // Mirrors: H = set(pop); for i, ind in enumerate(original): ...
+            let surviving_set: HashSet<usize> = surviving.iter().copied().collect();
+            let no_dup: Vec<usize> = (0..original_len)
+                .filter(|i| surviving_set.contains(i))
+                .collect();
+            let is_dup_idx: Vec<usize> = (0..original_len)
+                .filter(|i| !surviving_set.contains(i))
+                .collect();
+            DuplicateResult::WithIndices {
+                pop: pop.select(&surviving),
+                no_duplicate: no_dup,
+                is_duplicate: is_dup_idx,
+            }
+        } else {
+            DuplicateResult::Filtered(pop.select(&surviving))
+        }
+    }
+}
 
-            for i, ind in enumerate(original):
-                if ind in H:
-                    no_duplicate.append(i)
-                else:
-                    is_duplicate.append(i)
+// -------------------------------------------------------------------------------------------------
+// DefaultDuplicateElimination
+// -------------------------------------------------------------------------------------------------
 
-            return pop, no_duplicate, is_duplicate
-        else:
-            return pop
+/// Mirrors `pymoo.core.duplicate.DefaultDuplicateElimination`.
+pub struct DefaultDuplicateElimination {
+    pub func: fn(&Population) -> Array2<f64>,
+    pub epsilon: f64,
+}
 
-    def _do(self, pop, other, is_duplicate):
-        return is_duplicate
+impl DefaultDuplicateElimination {
+    pub fn new(func: Option<fn(&Population) -> Array2<f64>>, epsilon: Option<f64>) -> Self {
+        Self {
+            func: func.unwrap_or(default_attr),
+            epsilon: epsilon.unwrap_or(1e-16),
+        }
+    }
 
+    /// Mirrors `DefaultDuplicateElimination.calc_dist(pop, other)`.
+    pub fn calc_dist(&self, pop: &Population, other: Option<&Population>) -> Array2<f64> {
+        let x = (self.func)(pop);
+        let n = x.nrows();
 
-class DefaultDuplicateElimination(DuplicateElimination):
+        if let Some(other_pop) = other {
+            let x_other = (self.func)(other_pop);
+            cdist(&x, &x_other).unwrap_or_else(|_| Array2::zeros((n, other_pop.len())))
+        } else {
+            // D = cdist(X, X); D[np.triu_indices(len(X))] = np.inf
+            let mut d = cdist(&x, &x).unwrap_or_else(|_| Array2::zeros((n, n)));
+            for i in 0..n {
+                for j in i..n {
+                    d[[i, j]] = f64::INFINITY;
+                }
+            }
+            d
+        }
+    }
+}
 
-    def __init__(self, epsilon=1e-16, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.epsilon = epsilon
+impl DuplicateElimination for DefaultDuplicateElimination {
+    /// Mirrors `DefaultDuplicateElimination._do(pop, other, is_duplicate)`.
+    fn _do(&self, pop: &Population, other: Option<&Population>, is_duplicate: &mut Array1<bool>) {
+        let mut d = self.calc_dist(pop, other);
+        // D[np.isnan(D)] = np.inf
+        d.mapv_inplace(|v| if v.is_nan() { f64::INFINITY } else { v });
+        // is_duplicate[np.any(D <= self.epsilon, axis=1)] = True
+        for i in 0..d.nrows() {
+            if d.row(i).iter().any(|&v| v <= self.epsilon) {
+                is_duplicate[i] = true;
+            }
+        }
+    }
+}
 
-    def calc_dist(self, pop, other=None):
-        X = self.func(pop)
+// -------------------------------------------------------------------------------------------------
+// to_float / ElementwiseDuplicateElimination
+// -------------------------------------------------------------------------------------------------
 
-        if other is None:
-            D = cdist(X, X)
-            D[np.triu_indices(len(X))] = np.inf
-        else:
-            _X = self.func(other)
-            D = cdist(X, _X)
+/// Mirrors `pymoo.core.duplicate.to_float`.
+///
+/// In Python this converts a bool to float: True → 0.0, False → 1.0.
+/// In Rust the comparison function already returns `f64` directly.
+pub fn to_float(val: bool) -> f64 {
+    if val { 0.0 } else { 1.0 }
+}
 
-        return D
+/// Mirrors `pymoo.core.duplicate.ElementwiseDuplicateElimination`.
+pub struct ElementwiseDuplicateElimination {
+    pub epsilon: f64,
+    pub cmp_func: Box<dyn Fn(&Individual, &Individual) -> f64>,
+}
 
-    def _do(self, pop, other, is_duplicate):
-        D = self.calc_dist(pop, other)
-        D[np.isnan(D)] = np.inf
+impl ElementwiseDuplicateElimination {
+    pub fn new(
+        cmp_func: Option<Box<dyn Fn(&Individual, &Individual) -> f64>>,
+        epsilon: Option<f64>,
+    ) -> Self {
+        Self {
+            epsilon: epsilon.unwrap_or(1e-16),
+            // default mirrors is_equal (abstract — returns not-equal by default)
+            cmp_func: cmp_func
+                .unwrap_or_else(|| Box::new(|_: &Individual, _: &Individual| f64::INFINITY)),
+        }
+    }
+}
 
-        is_duplicate[np.any(D <= self.epsilon, axis=1)] = True
-        return is_duplicate
+impl DuplicateElimination for ElementwiseDuplicateElimination {
+    /// Mirrors `ElementwiseDuplicateElimination._do(pop, other, is_duplicate)`.
+    fn _do(&self, pop: &Population, other: Option<&Population>, is_duplicate: &mut Array1<bool>) {
+        if let Some(other_pop) = other {
+            // Mirrors: for i in range(len(pop)): for j in range(len(other)): ...
+            for i in 0..pop.len() {
+                for j in 0..other_pop.len() {
+                    let val = (self.cmp_func)(&pop[i], &other_pop[j]);
+                    if val < self.epsilon {
+                        is_duplicate[i] = true;
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Mirrors: for i in range(len(pop)): for j in range(i+1, len(pop)): ...
+            for i in 0..pop.len() {
+                for j in (i + 1)..pop.len() {
+                    let val = (self.cmp_func)(&pop[i], &pop[j]);
+                    if val < self.epsilon {
+                        is_duplicate[i] = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
 
+// -------------------------------------------------------------------------------------------------
+// to_hash / HashDuplicateElimination
+// -------------------------------------------------------------------------------------------------
 
-def to_float(val):
-    if isinstance(val, bool) or isinstance(val, np.bool_):
-        return 0.0 if val else 1.0
-    else:
-        return val
+/// Mirrors `pymoo.core.duplicate.to_hash`.
+///
+/// Hashes the decision variable (X) values of an individual.
+/// Falls back to hashing a string representation if X is unavailable.
+pub fn to_hash(ind: &Individual) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    match ind.data.get("X") {
+        Some(Value::FloatArray(arr)) => {
+            for &v in arr.iter() {
+                v.to_bits().hash(&mut hasher);
+            }
+        }
+        Some(Value::FloatMatrix(mat)) => {
+            for &v in mat.iter() {
+                v.to_bits().hash(&mut hasher);
+            }
+        }
+        _ => {
+            "no_x".hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
 
+/// Mirrors `pymoo.core.duplicate.HashDuplicateElimination`.
+pub struct HashDuplicateElimination {
+    pub func: Box<dyn Fn(&Individual) -> u64>,
+}
 
-class ElementwiseDuplicateElimination(DefaultDuplicateElimination):
+impl HashDuplicateElimination {
+    pub fn new(func: Option<Box<dyn Fn(&Individual) -> u64>>) -> Self {
+        Self {
+            func: func.unwrap_or_else(|| Box::new(to_hash)),
+        }
+    }
+}
 
-    def __init__(self, cmp_func=None, **kwargs) -> None:
-        super().__init__(**kwargs)
+impl DuplicateElimination for HashDuplicateElimination {
+    /// Mirrors `HashDuplicateElimination._do(pop, other, is_duplicate)`.
+    fn _do(&self, pop: &Population, other: Option<&Population>, is_duplicate: &mut Array1<bool>) {
+        let mut h_set: HashSet<u64> = HashSet::new();
 
-        if cmp_func is None:
-            cmp_func = self.is_equal
+        // Mirrors: if other is not None: for o in other: H.add(self.func(o))
+        if let Some(other_pop) = other {
+            for i in 0..other_pop.len() {
+                h_set.insert((self.func)(&other_pop[i]));
+            }
+        }
 
-        self.cmp_func = cmp_func
+        // Mirrors: for i, ind in enumerate(pop): h = self.func(ind); ...
+        for i in 0..pop.len() {
+            let h = (self.func)(&pop[i]);
+            if h_set.contains(&h) {
+                is_duplicate[i] = true;
+            } else {
+                h_set.insert(h);
+            }
+        }
+    }
+}
 
-    def is_equal(self, a, b):
-        pass
+// -------------------------------------------------------------------------------------------------
+// NoDuplicateElimination
+// -------------------------------------------------------------------------------------------------
 
-    def _do(self, pop, other, is_duplicate):
+/// Mirrors `pymoo.core.duplicate.NoDuplicateElimination`.
+pub struct NoDuplicateElimination;
 
-        if other is None:
-            for i in range(len(pop)):
-                for j in range(i + 1, len(pop)):
-                    val = to_float(self.cmp_func(pop[i], pop[j]))
-                    if val < self.epsilon:
-                        is_duplicate[i] = True
-                        break
-        else:
-            for i in range(len(pop)):
-                for j in range(len(other)):
-                    val = to_float(self.cmp_func(pop[i], other[j]))
-                    if val < self.epsilon:
-                        is_duplicate[i] = True
-                        break
+impl DuplicateElimination for NoDuplicateElimination {
+    fn _do(
+        &self,
+        _pop: &Population,
+        _other: Option<&Population>,
+        _is_duplicate: &mut Array1<bool>,
+    ) {
+        // unreachable — do_elimination is overridden to bypass _do entirely
+    }
 
-        return is_duplicate
-
-
-def to_hash(x):
-    try:
-        h = hash(x)
-    except:
-        try:
-            h = hash(str(x))
-        except:
-            raise Exception("Hash could not be calculated. Please use another duplicate elimination.")
-
-    return h
-
-
-class HashDuplicateElimination(DuplicateElimination):
-
-    def __init__(self, func=to_hash) -> None:
-        super().__init__()
-        self.func = func
-
-    def _do(self, pop, other, is_duplicate):
-        H = set()
-
-        if other is not None:
-            for o in other:
-                val = self.func(o)
-                H.add(self.func(val))
-
-        for i, ind in enumerate(pop):
-            val = self.func(ind)
-            h = self.func(val)
-
-            if h in H:
-                is_duplicate[i] = True
-            else:
-                H.add(h)
-
-        return is_duplicate
-
-
-class NoDuplicateElimination(DuplicateElimination):
-
-    def do(self, pop, *args, **kwargs):
-        return pop
+    /// Mirrors `NoDuplicateElimination.do(pop)` — returns `pop` unchanged.
+    fn do_elimination(
+        &self,
+        pop: &Population,
+        _others: &[&Population],
+        return_indices: bool,
+        _to_itself: bool,
+    ) -> DuplicateResult {
+        let n = pop.len();
+        let all: Vec<usize> = (0..n).collect();
+        if return_indices {
+            DuplicateResult::WithIndices {
+                pop: pop.select(&all),
+                no_duplicate: all,
+                is_duplicate: vec![],
+            }
+        } else {
+            DuplicateResult::Filtered(pop.select(&(0..n).collect::<Vec<_>>()))
+        }
+    }
+}

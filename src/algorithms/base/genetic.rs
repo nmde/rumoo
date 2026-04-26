@@ -1,9 +1,13 @@
 use crate::core::{
     algorithm::{Algorithm, AlgorithmBase},
     crossover::Crossover,
+    duplicate::DuplicateElimination,
+    initialization::Initialization,
+    mating::Mating,
     mutation::Mutation,
     population::Population,
     problem::Problem,
+    repair::Repair,
     sampling::Sampling,
     selection::Selection,
     survival::Survival,

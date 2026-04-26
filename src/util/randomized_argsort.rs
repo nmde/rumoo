@@ -1,63 +1,105 @@
-import numpy as np
+use std::cmp::Ordering;
 
-from pymoo.util.misc import swap
-from pymoo.util import default_random_state
+use ndarray::{Array1, s};
+use rand::{rngs::StdRng, seq::SliceRandom};
 
+use crate::util::default_random_state;
 
-@default_random_state
-def randomized_argsort(A, method="numpy", order='ascending', random_state=None):
-    if method == "numpy":
-        P = random_state.permutation(len(A))
-        I = np.argsort(A[P], kind='quicksort')
-        I = P[I]
+enum RandomSortingMethod {
+    Numpy,
+    Quicksort,
+}
 
-    elif method == "quicksort":
-        I = quicksort(A)
+enum SortingOrder {
+    Ascending,
+    Descending,
+}
 
-    else:
-        raise Exception("Randomized sort method not known.")
+/// Mirrors `pymoo.util.randomized_argsort.randomized_argsort`.
+///
+/// Returns indices that sort `a` (ascending by default) with randomized tie-breaking.
+/// `method`: `"numpy"` (default) or `"quicksort"`.
+/// `order`:  `"ascending"` (default) or `"descending"`.
+pub fn randomized_argsort(
+    a: &Array1<f64>,
+    method: Option<&RandomSortingMethod>,
+    order: Option<&SortingOrder>,
+    random_state: Option<&mut StdRng>,
+) -> Array1<usize> {
+    let method = method.unwrap_or(&RandomSortingMethod::Numpy);
+    let order = order.unwrap_or(&SortingOrder::Ascending);
 
-    if order == 'ascending':
-        return I
-    elif order == 'descending':
-        return np.flip(I, axis=0)
-    else:
-        raise Exception("Unknown sorting order: ascending or descending.")
+    let mut fallback = default_random_state();
+    let rng = random_state.unwrap_or(&mut fallback);
 
+    let result = match method {
+        RandomSortingMethod::Numpy => {
+            let n = a.len();
 
-@default_random_state
-def quicksort(A, random_state=None):
-    I = np.arange(len(A))
-    _quicksort(A, I, 0, len(A) - 1, random_state=random_state)
-    return I
+            // P = random_state.permutation(len(A))
+            let mut p: Vec<usize> = (0..n).collect();
+            p.shuffle(rng);
 
+            // I = np.argsort(A[P], kind='quicksort')
+            let mut idx: Vec<usize> = (0..n).collect();
+            idx.sort_by(|&x, &y| a[p[x]].partial_cmp(&a[p[y]]).unwrap_or(Ordering::Equal));
 
-def _quicksort(A, I, left, right, random_state):
-    if left < right:
+            // I = P[I]
+            let mapped: Vec<usize> = idx.iter().map(|&i| p[i]).collect();
+            Array1::from(mapped)
+        }
+        RandomSortingMethod::Quicksort => quicksort(a, Some(rng)),
+    };
 
-        index = random_state.integers(left, right + 1)
-        swap(I, right, index)
+    match order {
+        SortingOrder::Ascending => result,
+        SortingOrder::Descending => result.slice(s![..;-1]).to_owned(),
+    }
+}
 
-        pivot = A[I[right]]
+/// Mirrors `pymoo.util.randomized_argsort.quicksort`.
+pub fn quicksort(a: &Array1<f64>, random_state: Option<&mut StdRng>) -> Array1<usize> {
+    let n = a.len();
+    let mut idx: Vec<usize> = (0..n).collect();
+    let mut fallback = default_random_state();
+    let rng = random_state.unwrap_or(&mut fallback);
+    if n > 0 {
+        _quicksort(a, &mut idx, 0, n - 1, rng);
+    }
+    Array1::from(idx)
+}
 
-        i = left - 1
+/// Mirrors `pymoo.util.randomized_argsort._quicksort`.
+fn _quicksort(a: &Array1<f64>, idx: &mut Vec<usize>, left: usize, right: usize, rng: &mut StdRng) {
+    if left < right {
+        // index = random_state.integers(left, right + 1)
+        let index = rng.gen_range(left..=right);
 
-        for j in range(left, right):
+        // swap(I, right, index)
+        idx.swap(right, index);
 
-            if A[I[j]] <= pivot:
-                i += 1
-                swap(I, i, j)
+        let pivot = a[idx[right]];
 
-        index = i + 1
-        swap(I, right, index)
+        // i = left - 1  (use isize to represent -1 initial value)
+        let mut i: isize = left as isize - 1;
 
-        _quicksort(A, I, left, index - 1, random_state)
-        _quicksort(A, I, index + 1, right, random_state)
+        for j in left..right {
+            if a[idx[j]] <= pivot {
+                i += 1;
+                // swap(I, i, j)
+                idx.swap(i as usize, j);
+            }
+        }
 
+        let partition_idx = (i + 1) as usize;
+        // swap(I, right, index)
+        idx.swap(right, partition_idx);
 
-if __name__ == '__main__':
-    a = np.array([5, 9, 10, 0, 0, 0, 100, -2])
-
-    for i in range(200):
-        I = randomized_argsort(a, method="numpy")
-        print(I)
+        // _quicksort(A, I, left, index - 1, ...)
+        if partition_idx > 0 {
+            _quicksort(a, idx, left, partition_idx - 1, rng);
+        }
+        // _quicksort(A, I, index + 1, right, ...)
+        _quicksort(a, idx, partition_idx + 1, right, rng);
+    }
+}

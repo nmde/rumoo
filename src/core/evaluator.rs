@@ -1,3 +1,4 @@
+use anyhow::{Result, anyhow};
 use ndarray::Array1;
 
 use crate::core::{
@@ -63,8 +64,10 @@ pub trait Evaluator {
         count_evals: Option<bool>,
     ) -> &mut Population {
         let count_evals = count_evals.unwrap_or(true);
-        let evaluate_values_of = evaluate_values_of.unwrap_or(self.base().evaluate_values_of.clone());
-        let skip_already_evaluated = skip_already_evaluated.unwrap_or(self.base().skip_already_evaluated);
+        let evaluate_values_of =
+            evaluate_values_of.unwrap_or(self.base().evaluate_values_of.clone());
+        let skip_already_evaluated =
+            skip_already_evaluated.unwrap_or(self.base().skip_already_evaluated);
 
         // Mirrors: I = [i for i, ind in enumerate(pop)
         //               if not all(e in ind.evaluated for e in evaluate_values_of)]
@@ -111,12 +114,17 @@ pub trait Evaluator {
         problem: &dyn Problem,
         pop: &mut Population,
         evaluate_values_of: &[IndividualField],
-    ) {
+    ) -> Result<()> {
         // Mirrors: X = pop.get("X")
         let x = pop.get(&IndividualField::X);
 
         // Mirrors: out = problem.evaluate(X, return_values_of=…, return_as_dictionary=True)
-        let out = problem.evaluate(x, Some(evaluate_values_of.to_vec()), None)?;
+        let out = match x {
+            Value::FloatMatrix(m) => {
+                problem.evaluate(m, Some(evaluate_values_of.to_vec()), None)?
+            }
+            _ => return Err(anyhow!("Invalid value type for x")),
+        };
 
         // Mirrors: for key, val in out.items(): if val is not None: pop.set(key, val)
         for (key, val) in out {
@@ -131,6 +139,8 @@ pub trait Evaluator {
                 ind.evaluated.insert(field.clone());
             }
         }
+
+        Ok(())
     }
 }
 
@@ -195,10 +205,12 @@ impl Evaluator for VoidEvaluator {
         &mut self,
         problem: &dyn Problem,
         pop: &mut Population,
-        _algorithm: &mut dyn Algorithm,
-    ) {
+        skip_already_evaluated: Option<bool>,
+        evaluate_values_of: Option<&[IndividualField]>,
+        count_evals: Option<bool>,
+    ) -> &mut Population {
         let val = match self.value {
-            None => return,
+            None => return pop,
             Some(v) => v,
         };
 
@@ -238,5 +250,7 @@ impl Evaluator for VoidEvaluator {
                 );
             }
         }
+
+        pop
     }
 }

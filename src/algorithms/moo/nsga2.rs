@@ -8,7 +8,10 @@ use crate::{
         crossover::Crossover, individual::IndividualField, mutation::Mutation,
         population::Population, sampling::Sampling, selection::Selection, survival::Survival,
     },
-    operators::selection::tournament::{CompareMethod, TournamentSelection, compare},
+    operators::{
+        selection::tournament::{CompareMethod, TournamentSelection, compare},
+        survival::rank_and_crowding::classes::RankAndCrowding,
+    },
     termination::default::DefaultMultiObjectiveTermination,
     util::{display::output::Output, dominator::Dominator, misc::has_feasible},
 };
@@ -131,7 +134,7 @@ impl NSGA2 {
             Some(Box::new(binary_tournament)),
             None,
         )));
-        let survival = survival.unwrap_or_else(|| RankAndCrowding::new(None, "cd"));
+        let survival = survival.unwrap_or_else(|| Box::new(RankAndCrowding::new(None, Some("cd"))));
         let output = output.unwrap_or_else(MultiObjectiveOutput::new);
 
         let mut algorithm = GeneticAlgorithm::new(

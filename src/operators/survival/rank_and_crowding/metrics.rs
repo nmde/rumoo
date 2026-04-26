@@ -4,6 +4,14 @@ use ndarray::{Array1, Array2, Axis, s};
 
 use crate::util::misc::find_duplicates;
 
+pub enum CrowdingFunctionType {
+    Cd,
+    Pcd,
+    Ce,
+    Mnn,
+    Twonn,
+}
+
 // -------------------------------------------------------------------------------------------------
 // CrowdingFunction trait (mirrors CrowdingDiversity)
 // -------------------------------------------------------------------------------------------------
@@ -29,7 +37,10 @@ pub struct FunctionalDiversity {
 
 impl FunctionalDiversity {
     pub fn new(function: CrowdFn, filter_out_duplicates: bool) -> Self {
-        Self { function, filter_out_duplicates }
+        Self {
+            function,
+            filter_out_duplicates,
+        }
     }
 }
 
@@ -72,7 +83,9 @@ pub struct FuncionalDiversityMNN {
 
 impl FuncionalDiversityMNN {
     pub fn new(function: CrowdFn, filter_out_duplicates: bool) -> Self {
-        Self { inner: FunctionalDiversity::new(function, filter_out_duplicates) }
+        Self {
+            inner: FunctionalDiversity::new(function, filter_out_duplicates),
+        }
     }
 }
 
@@ -92,14 +105,15 @@ impl CrowdingFunction for FuncionalDiversityMNN {
 // -------------------------------------------------------------------------------------------------
 
 /// Mirrors `pymoo.operators.survival.rank_and_crowding.metrics.get_crowding_function`.
-pub fn get_crowding_function(label: &str) -> Box<dyn CrowdingFunction> {
+pub fn get_crowding_function(label: &CrowdingFunctionType) -> Box<dyn CrowdingFunction> {
     match label {
-        "cd" => Box::new(FunctionalDiversity::new(calc_crowding_distance, false)),
-        "pcd" | "pruning-cd" => Box::new(FunctionalDiversity::new(calc_pcd, true)),
-        "ce" => Box::new(FunctionalDiversity::new(calc_crowding_entropy, true)),
-        "mnn" => Box::new(FuncionalDiversityMNN::new(calc_mnn_fast, true)),
-        "2nn" => Box::new(FuncionalDiversityMNN::new(calc_2nn_fast, true)),
-        _ => panic!("Crowding function not defined"),
+        CrowdingFunctionType::Cd => {
+            Box::new(FunctionalDiversity::new(calc_crowding_distance, false))
+        }
+        CrowdingFunctionType::Pcd => Box::new(FunctionalDiversity::new(calc_pcd, true)),
+        CrowdingFunctionType::Ce => Box::new(FunctionalDiversity::new(calc_crowding_entropy, true)),
+        CrowdingFunctionType::Mnn => Box::new(FuncionalDiversityMNN::new(calc_mnn_fast, true)),
+        CrowdingFunctionType::Twonn => Box::new(FuncionalDiversityMNN::new(calc_2nn_fast, true)),
     }
 }
 

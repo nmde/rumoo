@@ -6,6 +6,7 @@ pub mod misc;
 pub mod nds;
 pub mod normalization;
 pub mod optimum;
+pub mod randomized_argsort;
 pub mod sliding_window;
 
 pub fn default_random_state() -> StdRng {

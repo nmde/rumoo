@@ -1,12 +1,16 @@
 pub mod algorithm;
 pub mod callback;
+pub mod duplicate;
+pub mod initialization;
 pub mod evaluator;
 pub mod crossover;
 pub mod individual;
+pub mod mating;
 pub mod mutation;
 pub mod operator;
 pub mod population;
 pub mod problem;
+pub mod repair;
 pub mod result;
 pub mod sampling;
 pub mod selection;

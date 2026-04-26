@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use ndarray::{Array1, Array2, Axis};
 use rand::rngs::StdRng;
 
+use super::metrics::{CrowdingFunction, get_crowding_function};
 use crate::{
     core::{
         individual::{IndividualField, Value},
@@ -10,9 +11,12 @@ use crate::{
         problem::Problem,
         survival::{Survival, split_by_feasibility},
     },
-    util::nds::non_dominated_sorting::NonDominatedSorting,
+    operators::survival::rank_and_crowding::metrics::CrowdingFunctionType,
+    util::{
+        default_random_state, nds::non_dominated_sorting::NonDominatedSorting,
+        randomized_argsort::randomized_argsort,
+    },
 };
-use super::metrics::{CrowdingFunction, get_crowding_function};
 
 // -------------------------------------------------------------------------------------------------
 // RankAndCrowding
@@ -26,10 +30,15 @@ pub struct RankAndCrowding {
 
 impl RankAndCrowding {
     /// Mirrors `RankAndCrowding.__init__(nds=None, crowding_func="cd")`.
-    pub fn new(nds: Option<NonDominatedSorting>, crowding_func: Option<&str>) -> Self {
+    pub fn new(
+        nds: Option<NonDominatedSorting>,
+        crowding_func: Option<&CrowdingFunctionType>,
+    ) -> Self {
         Self {
             nds: nds.unwrap_or_else(NonDominatedSorting::new),
-            crowding_func: get_crowding_function(crowding_func.unwrap_or("cd")),
+            crowding_func: get_crowding_function(
+                crowding_func.unwrap_or(&CrowdingFunctionType::Cd),
+            ),
         }
     }
 }
@@ -49,6 +58,7 @@ impl Survival for RankAndCrowding {
         random_state: Option<&mut StdRng>,
     ) -> Population {
         let n_survive = n_survive.unwrap_or_else(|| pop.len());
+        let mut random_state = random_state.unwrap_or(&mut default_random_state());
 
         // Mirrors: F = pop.get("F").astype(float)
         let f = match pop.get(&IndividualField::F) {
@@ -89,14 +99,10 @@ impl Survival for RankAndCrowding {
 
                 // Mirrors: I = randomized_argsort(crowding_of_front, order='descending', ...)
                 //          I = I[:-n_remove]
-                let mut order: Vec<usize> = (0..crowding_of_front.len()).collect();
-                order.sort_by(|&a, &b| {
-                    crowding_of_front[b]
-                        .partial_cmp(&crowding_of_front[a])
-                        .unwrap_or(Ordering::Equal)
-                });
-                randomized_argsort(&mut order, &crowding_of_front, random_state.as_deref_mut());
-                i_sel = order[..order.len() - n_remove].to_vec();
+                // ascending result: first n_remove are lowest crowding (removed), rest are kept
+                let sorted =
+                    randomized_argsort(&crowding_of_front, None, None, Some(&mut *random_state));
+                i_sel = sorted.iter().skip(n_remove).copied().collect();
             } else {
                 // Mirrors: crowding_of_front = self.crowding_func.do(F[front, :], n_remove=0)
                 crowding_of_front = self.crowding_func.do_crowd(&f_front, 0);
@@ -139,7 +145,10 @@ pub struct ConstrRankAndCrowding {
 
 impl ConstrRankAndCrowding {
     /// Mirrors `ConstrRankAndCrowding.__init__(nds=None, crowding_func="cd")`.
-    pub fn new(nds: Option<NonDominatedSorting>, crowding_func: Option<&str>) -> Self {
+    pub fn new(
+        nds: Option<NonDominatedSorting>,
+        crowding_func: Option<&CrowdingFunctionType>,
+    ) -> Self {
         let nds = nds.unwrap_or_else(NonDominatedSorting::new);
         let ranking = RankAndCrowding::new(Some(nds.clone()), crowding_func);
         Self { nds, ranking }
@@ -233,11 +242,7 @@ impl Survival for ConstrRankAndCrowding {
                         _ => Array1::zeros(front.len()),
                     };
                     let mut order: Vec<usize> = (0..front.len()).collect();
-                    order.sort_by(|&a, &b| {
-                        cv[a]
-                            .partial_cmp(&cv[b])
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    });
+                    order.sort_by(|&a, &b| cv[a].partial_cmp(&cv[b]).unwrap_or(Ordering::Equal));
                     let take = n_survive - survivors.len();
                     order[..take.min(order.len())].to_vec()
                 } else {
