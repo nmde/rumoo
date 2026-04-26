@@ -1,4 +1,4 @@
-use ndarray::{Array1, Array2, ArrayView1};
+use ndarray::{Array1, Array2};
 
 use crate::core::individual::Individual;
 
@@ -11,7 +11,7 @@ pub fn get_relation(ind_a: &Individual, ind_b: &Individual) -> i32 {
     };
     let cva = ind_a.cv().first().copied();
     let cvb = ind_b.cv().first().copied();
-    Dominator::get_relation(a.view(), b.view(), cva, cvb)
+    Dominator::get_relation(*a, *b, cva, cvb)
 }
 
 /// Pareto-dominance utilities.
@@ -31,12 +31,7 @@ impl Dominator {
     /// takes priority over the objective comparison.
     ///
     /// Mirrors `Dominator.get_relation(a, b, cva=None, cvb=None)`.
-    pub fn get_relation(
-        a: ArrayView1<f64>,
-        b: ArrayView1<f64>,
-        cva: Option<f64>,
-        cvb: Option<f64>,
-    ) -> i32 {
+    pub fn get_relation(a: Array1<f64>, b: Array1<f64>, cva: Option<f64>, cvb: Option<f64>) -> i32 {
         if let (Some(cva), Some(cvb)) = (cva, cvb) {
             if cva < cvb {
                 return 1;
@@ -87,7 +82,12 @@ impl Dominator {
         let mut m = Array2::<i32>::zeros((n, n));
         for i in 0..n {
             for j in (i + 1)..n {
-                let rel = Dominator::get_relation(f.row(i), f.row(j), Some(cv[i]), Some(cv[j]));
+                let rel = Dominator::get_relation(
+                    f.row(i).into_owned(),
+                    f.row(j).into_owned(),
+                    Some(cv[i]),
+                    Some(cv[j]),
+                );
                 m[[i, j]] = rel;
                 m[[j, i]] = -rel;
             }

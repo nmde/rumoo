@@ -116,7 +116,7 @@ pub trait Evaluator {
         let x = pop.get(&IndividualField::X);
 
         // Mirrors: out = problem.evaluate(X, return_values_of=…, return_as_dictionary=True)
-        let out = problem.evaluate(x, evaluate_values_of);
+        let out = problem.evaluate(x, Some(evaluate_values_of.to_vec()), None)?;
 
         // Mirrors: for key, val in out.items(): if val is not None: pop.set(key, val)
         for (key, val) in out {

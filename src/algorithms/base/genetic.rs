@@ -1,110 +1,222 @@
-from pymoo.core.algorithm import Algorithm
-from pymoo.core.duplicate import DefaultDuplicateElimination, NoDuplicateElimination
-from pymoo.core.initialization import Initialization
-from pymoo.core.mating import Mating
-from pymoo.core.population import Population
-from pymoo.core.repair import NoRepair
+use crate::core::{
+    algorithm::{Algorithm, AlgorithmBase},
+    crossover::Crossover,
+    mutation::Mutation,
+    population::Population,
+    problem::Problem,
+    sampling::Sampling,
+    selection::Selection,
+    survival::Survival,
+};
 
+/// Mirrors `pymoo.algorithms.base.genetic.GeneticAlgorithm`.
+pub struct GeneticAlgorithm {
+    pub base: AlgorithmBase,
 
-class GeneticAlgorithm(Algorithm):
+    /// Size of the maintained population.
+    pub pop_size: Option<usize>,
 
-    def __init__(self,
-                 pop_size=None,
-                 sampling=None,
-                 selection=None,
-                 crossover=None,
-                 mutation=None,
-                 survival=None,
-                 n_offsprings=None,
-                 eliminate_duplicates=DefaultDuplicateElimination(),
-                 repair=None,
-                 mating=None,
-                 advance_after_initial_infill=False,
-                 **kwargs
-                 ):
+    /// Whether to run `survival` immediately after the initial infill is evaluated.
+    pub advance_after_initial_infill: bool,
 
-        super().__init__(**kwargs)
+    /// Survival strategy (rank-and-crowding, reference-direction, etc.).
+    pub survival: Option<Box<dyn Survival>>,
 
-        # the population size used
-        self.pop_size = pop_size
+    /// Number of offspring to produce each generation. Defaults to `pop_size`.
+    pub n_offsprings: Option<usize>,
 
-        # whether the algorithm should be advanced after initialization of not
-        self.advance_after_initial_infill = advance_after_initial_infill
+    pub eliminate_duplicates: Box<dyn DuplicateElimination>,
+    pub repair: Box<dyn Repair>,
 
-        # the survival for the genetic algorithm
-        self.survival = survival
+    pub initialization: Initialization,
+    pub mating: Mating,
+}
 
-        # number of offsprings to generate through recombination
-        self.n_offsprings = n_offsprings
+impl GeneticAlgorithm {
+    /// Mirrors `GeneticAlgorithm.__init__(...)`.
+    pub fn new(
+        pop_size: Option<usize>,
+        sampling: Option<Box<dyn Sampling>>,
+        selection: Option<Box<dyn Selection>>,
+        crossover: Option<Box<dyn Crossover>>,
+        mutation: Option<Box<dyn Mutation>>,
+        survival: Option<Box<dyn Survival>>,
+        n_offsprings: Option<usize>,
+        eliminate_duplicates: Option<Box<dyn DuplicateElimination>>,
+        repair: Option<Box<dyn Repair>>,
+        mating: Option<Mating>,
+        advance_after_initial_infill: Option<bool>,
+    ) -> Self {
+        // Mirrors: if n_offsprings is None: n_offsprings = pop_size
+        let n_offsprings = n_offsprings.or(pop_size);
 
-        # if the number of offspring is not set - equal to population size
-        if self.n_offsprings is None:
-            self.n_offsprings = pop_size
+        // Mirrors: isinstance(eliminate_duplicates, bool) dispatch
+        let eliminate_duplicates =
+            eliminate_duplicates.unwrap_or_else(|| Box::new(DefaultDuplicateElimination::new()));
 
-        # set the duplicate detection class - a boolean value chooses the default duplicate detection
-        if isinstance(eliminate_duplicates, bool):
-            if eliminate_duplicates:
-                self.eliminate_duplicates = DefaultDuplicateElimination()
-            else:
-                self.eliminate_duplicates = NoDuplicateElimination()
-        else:
-            self.eliminate_duplicates = eliminate_duplicates
+        // Mirrors: repair = repair if repair is not None else NoRepair()
+        let repair = repair.unwrap_or_else(|| Box::new(NoRepair::new()));
 
-        # simply set the no repair object if it is None
-        self.repair = repair if repair is not None else NoRepair()
+        let initialization =
+            Initialization::new(sampling, repair.as_ref(), eliminate_duplicates.as_ref());
 
-        self.initialization = Initialization(sampling,
-                                             repair=self.repair,
-                                             eliminate_duplicates=self.eliminate_duplicates)
+        // Mirrors: if mating is None: mating = Mating(selection, crossover, mutation, ...)
+        let mating = mating.unwrap_or_else(|| {
+            Mating::new(
+                selection,
+                crossover,
+                mutation,
+                repair.as_ref(),
+                eliminate_duplicates.as_ref(),
+                Some(100),
+            )
+        });
 
-        if mating is None:
-            mating = Mating(selection,
-                            crossover,
-                            mutation,
-                            repair=self.repair,
-                            eliminate_duplicates=self.eliminate_duplicates,
-                            n_max_iterations=100)
-        self.mating = mating
+        Self {
+            base: AlgorithmBase::new(None, None, None, None, None, None, None, None, None, None),
+            pop_size,
+            advance_after_initial_infill: advance_after_initial_infill.unwrap_or(false),
+            survival,
+            n_offsprings,
+            eliminate_duplicates,
+            repair,
+            initialization,
+            mating,
+        }
+    }
+}
 
-        # other run specific data updated whenever solve is called - to share them in all algorithms
-        self.n_gen = None
-        self.pop = None
-        self.off = None
+impl Algorithm for GeneticAlgorithm {
+    fn base(&self) -> &AlgorithmBase {
+        &self.base
+    }
 
-    def _initialize_infill(self):
-        pop = self.initialization.do(self.problem, self.pop_size, algorithm=self, random_state=self.random_state)
-        return pop
+    fn base_mut(&mut self) -> &mut AlgorithmBase {
+        &mut self.base
+    }
 
-    def _initialize_advance(self, infills=None, **kwargs):
-        if self.advance_after_initial_infill:
-            self.pop = self.survival.do(self.problem, infills, n_survive=len(infills),
-                                        random_state=self.random_state, algorithm=self, **kwargs)
+    /// Mirrors `GeneticAlgorithm._initialize_infill`:
+    /// `pop = self.initialization.do(self.problem, self.pop_size, ...)`.
+    fn _initialize_infill(&mut self) -> Option<Population> {
+        let pop_size = self.pop_size.unwrap_or(0);
+        let prob_ptr = self
+            .base
+            .problem
+            .as_ref()
+            .map(|p| p.as_ref() as *const dyn Problem)?;
+        let mut rng = self.base.random_state.take();
+        let pop = self
+            .initialization
+            .do_init(unsafe { &*prob_ptr }, pop_size, rng.as_mut());
+        self.base.random_state = rng;
+        Some(pop)
+    }
 
-    def _infill(self):
+    /// Mirrors `GeneticAlgorithm._initialize_advance`:
+    /// if `advance_after_initial_infill`, run survival on the initial population.
+    fn _initialize_advance(&mut self, infills: Option<&Population>) {
+        if !self.advance_after_initial_infill {
+            return;
+        }
+        let infills = match infills {
+            Some(p) => p,
+            None => return,
+        };
+        let n = infills.len();
+        let prob_ptr = match self
+            .base
+            .problem
+            .as_ref()
+            .map(|p| p.as_ref() as *const dyn Problem)
+        {
+            Some(p) => p,
+            None => return,
+        };
+        let mut rng = self.base.random_state.take();
+        if let Some(ref mut survival) = self.survival {
+            let result = survival.do_survival(unsafe { &*prob_ptr }, infills, n, rng.as_mut());
+            self.base.pop = Some(result);
+        }
+        self.base.random_state = rng;
+    }
 
-        # do the mating using the current population
-        off = self.mating.do(self.problem, self.pop, self.n_offsprings, algorithm=self, random_state=self.random_state)
+    /// Mirrors `GeneticAlgorithm._infill`:
+    /// produce offspring via mating; force-terminate if mating yields nothing.
+    fn _infill(&mut self) -> Option<Population> {
+        let n_offsprings = self.n_offsprings.unwrap_or(0);
+        let pop = self.base.pop.clone()?;
+        let prob_ptr = self
+            .base
+            .problem
+            .as_ref()
+            .map(|p| p.as_ref() as *const dyn Problem)?;
+        let mut rng = self.base.random_state.take();
 
-        # if the mating could not generate any new offspring (duplicate elimination might make that happen)
-        if len(off) == 0:
-            self.termination.force_termination = True
-            return
+        let off = self
+            .mating
+            .do_mating(unsafe { &*prob_ptr }, &pop, n_offsprings, rng.as_mut());
+        self.base.random_state = rng;
 
-        # if not the desired number of offspring could be created
-        elif len(off) < self.n_offsprings:
-            if self.verbose:
-                print("WARNING: Mating could not produce the required number of (unique) offsprings!")
+        match off {
+            // Mirrors: if len(off) == 0: self.termination.force_termination = True; return
+            None => {
+                if let Some(ref mut t) = self.base.termination {
+                    t.base_mut().force_termination = true;
+                }
+                None
+            }
+            Some(ref o) if o.is_empty() => {
+                if let Some(ref mut t) = self.base.termination {
+                    t.base_mut().force_termination = true;
+                }
+                None
+            }
+            Some(o) => {
+                // Mirrors: elif len(off) < self.n_offsprings: print("WARNING: ...")
+                if o.len() < n_offsprings && self.base.verbose {
+                    eprintln!(
+                        "WARNING: Mating could not produce the required number of (unique) offsprings!"
+                    );
+                }
+                Some(o)
+            }
+        }
+    }
 
-        return off
+    /// Mirrors `GeneticAlgorithm._advance`:
+    /// merge population with offspring, then run survival.
+    fn _advance(&mut self, infills: Option<&Population>) -> Option<bool> {
+        let pop = self
+            .base
+            .pop
+            .clone()
+            .unwrap_or_else(|| Population::empty(0));
 
-    def _advance(self, infills=None, **kwargs):
+        // Mirrors: if infills is not None: pop = Population.merge(self.pop, infills)
+        let merged = match infills {
+            Some(offs) => Population::merge(pop, *offs),
+            None => pop,
+        };
 
-        # the current population
-        pop = self.pop
+        let n_survive = self.pop_size.unwrap_or(0);
+        let prob_ptr = match self
+            .base
+            .problem
+            .as_ref()
+            .map(|p| p.as_ref() as *const dyn Problem)
+        {
+            Some(p) => p,
+            None => return None,
+        };
+        let mut rng = self.base.random_state.take();
 
-        # merge the offsprings with the current population
-        if infills is not None:
-            pop = Population.merge(self.pop, infills)
+        if let Some(ref mut survival) = self.survival {
+            let result =
+                survival.do_survival(unsafe { &*prob_ptr }, &merged, n_survive, rng.as_mut());
+            self.base.pop = Some(result);
+        }
+        self.base.random_state = rng;
 
-        # execute the survival to find the fittest solutions
-        self.pop = self.survival.do(self.problem, pop, n_survive=self.pop_size, algorithm=self, random_state=self.random_state, **kwargs)
+        None
+    }
+}

@@ -3,11 +3,13 @@ use ndarray::{Array1, Array2};
 use rand::rngs::StdRng;
 
 use crate::{
+    algorithms::base::genetic::GeneticAlgorithm,
     core::{
         crossover::Crossover, individual::IndividualField, mutation::Mutation,
         population::Population, sampling::Sampling, selection::Selection, survival::Survival,
     },
     operators::selection::tournament::{CompareMethod, TournamentSelection, compare},
+    termination::default::DefaultMultiObjectiveTermination,
     util::{display::output::Output, dominator::Dominator, misc::has_feasible},
 };
 
@@ -17,7 +19,6 @@ from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
 from pymoo.operators.survival.rank_and_crowding import RankAndCrowding
 from pymoo.operators.sampling.rnd import FloatRandomSampling
-from pymoo.termination.default import DefaultMultiObjectiveTermination
 from pymoo.util.display.multi import MultiObjectiveOutput;
 */
 

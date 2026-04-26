@@ -4,6 +4,7 @@ use rand::{rngs::StdRng, seq::IndexedRandom};
 
 use crate::{
     core::{
+        operator::{Operator, OperatorBase},
         population::Population,
         problem::Problem,
         selection::{Selection, SelectionResult},
@@ -11,56 +12,45 @@ use crate::{
     util::{default_random_state, misc::random_permutations},
 };
 
-/*
-from pymoo.util.misc import random_permutations
-*/
-
 /// The comparison function stored by `TournamentSelection`.
 ///
 /// Mirrors the Python `func_comp` parameter:
 /// `func_comp(pop, P, random_state=random_state, **kwargs)`
-///
-/// In Python the algorithm reference is forwarded via `**kwargs`. In Rust
-/// that context must be captured by the caller when constructing the closure
-/// (or passed through a trait-object context if more flexibility is needed).
 pub type CompareFunc =
     Box<dyn Fn(&Population, &Array2<usize>, Option<&mut StdRng>) -> Result<Array2<i64>>>;
 
 /// Simulate a tournament between individuals.
-/// The selection pressure balances how greedy the genetic algorithm will be.
 ///
 /// Mirrors `pymoo.operators.selection.tournament.TournamentSelection`.
 pub struct TournamentSelection {
-    /// Comparison function that decides the tournament winner.
+    pub base: OperatorBase,
     pub func_comp: CompareFunc,
     /// Number of individuals competing per tournament slot (default: 2 = binary).
     pub pressure: usize,
 }
 
 impl TournamentSelection {
-    /// Create a new `TournamentSelection`.
+    /// Mirrors `TournamentSelection.__init__(func_comp, pressure=2)`.
     ///
-    /// # Panics
-    /// Mirrors Python's `raise Exception("Please provide the comparing function …")` —
-    /// the compiler enforces this at the type level; no runtime panic needed.
+    /// Returns `Err` if `func_comp` is `None`, mirroring Python's runtime exception.
     pub fn new(func_comp: Option<CompareFunc>, pressure: Option<usize>) -> Result<Self> {
-        if func_comp.is_none() {
-            return Err(anyhow!(
-                "Please provide the comparing function for the tournament selection!"
-            ));
-        }
+        let func_comp = func_comp.ok_or_else(|| {
+            anyhow!("Please provide the comparing function for the tournament selection!")
+        })?;
         Ok(Self {
-            func_comp: Box::new(func_comp.unwrap()),
+            base: OperatorBase::new(None, None, None),
+            func_comp,
             pressure: pressure.unwrap_or(2),
         })
     }
 
-    /// Run the tournament and return the selected parent indices.
+    /// Run tournament selection and return selected parent indices.
     ///
     /// Mirrors `TournamentSelection._do(_, pop, n_select, n_parents, random_state)`.
+    /// Renamed from `_do` to avoid a name collision with `Operator::_do`.
     ///
     /// Returns an `Array2<i64>` of shape `(n_select, n_parents)`.
-    pub fn _do(
+    pub fn _do_tournament(
         &self,
         pop: &Population,
         n_select: usize,
@@ -69,53 +59,65 @@ impl TournamentSelection {
     ) -> Result<Array2<i64>> {
         let n_parents = n_parents.unwrap_or(1);
 
-        // number of random individuals needed
+        // Mirrors: n_random = n_select * n_parents * self.pressure
         let n_random = n_select * n_parents * self.pressure;
 
-        // number of permutations needed
-        // n_perms = math.ceil(n_random / len(pop))
+        // Mirrors: n_perms = math.ceil(n_random / len(pop))
         let n_perms = (n_random as f64 / pop.len() as f64).ceil() as usize;
 
-        // get random permutations and reshape them
-        // P = random_permutations(n_perms, len(pop), random_state=random_state)[:n_random]
+        // Mirrors: P = random_permutations(n_perms, len(pop))[:n_random]
         let p_flat = random_permutations(n_perms, pop.len(), random_state.as_deref_mut());
         let p_flat = p_flat.slice(s![..n_random]).to_owned();
 
-        // P = np.reshape(P, (n_select * n_parents, self.pressure))
+        // Mirrors: P = np.reshape(P, (n_select * n_parents, self.pressure))
         let p = p_flat.into_shape((n_select * n_parents, self.pressure))?;
 
-        // compare using tournament function
-        // S = self.func_comp(pop, P, random_state=random_state, **kwargs)
-        let s = (self.func_comp)(pop, &p, random_state);
+        // Mirrors: S = self.func_comp(pop, P, random_state=random_state)
+        let s = (self.func_comp)(pop, &p, random_state)?;
 
-        // return np.reshape(S, (n_select, n_parents))
+        // Mirrors: return np.reshape(S, (n_select, n_parents))
         Ok(s.into_shape((n_select, n_parents))?)
     }
 }
 
+impl Operator for TournamentSelection {
+    fn base(&self) -> &OperatorBase {
+        &self.base
+    }
+
+    fn _do(
+        &self,
+        _problem: &dyn Problem,
+        _elem: &Population,
+        _random_state: Option<&mut StdRng>,
+    ) -> Population {
+        unimplemented!(
+            "TournamentSelection is invoked via Selection::do_selection, not Operator::do_op"
+        )
+    }
+}
+
 impl Selection for TournamentSelection {
+    /// Mirrors `TournamentSelection._do(_, pop, n_select, n_parents, random_state)`.
     fn _do_selection(
         &self,
-        problem: &dyn Problem,
+        _problem: &dyn Problem,
         pop: &Population,
         n_select: usize,
         n_parents: usize,
-        to_pop: Option<bool>,
+        _to_pop: Option<bool>,
         random_state: Option<&mut StdRng>,
     ) -> SelectionResult {
-        let to_pop = to_pop.unwrap_or(true);
-        let indices = self.do_select(pop, n_select, n_parents, random_state);
-
-        // if some selections return indices they are used to create the individual list
-        // if to_pop and isinstance(ret, np.ndarray) and np.issubdtype(ret.dtype, np.integer):
-        //     ret = pop[ret]
-        if to_pop {
-            SelectionResult::Individuals(pop.select_by_index_matrix(&indices))
-        } else {
-            SelectionResult::Indices(indices)
-        }
+        let indices = self
+            ._do_tournament(pop, n_select, Some(n_parents), random_state)
+            .expect("tournament selection failed");
+        SelectionResult::Indices(indices)
     }
 }
+
+// -------------------------------------------------------------------------------------------------
+// compare() utility
+// -------------------------------------------------------------------------------------------------
 
 pub enum CompareMethod {
     LargerIsBetter,
@@ -124,17 +126,7 @@ pub enum CompareMethod {
 
 /// Compare two tournament candidates by value and return the winner's index.
 ///
-/// | `method`            | winner condition |
-/// |---------------------|-----------------|
-/// | `"larger_is_better"` | higher `a_val` / `b_val` wins |
-/// | `"smaller_is_better"`| lower `a_val` / `b_val` wins |
-///
-/// Returns `Some(a)` or `Some(b)` on a clear winner; on a tie returns
-/// `Some(random choice)` when `return_random_if_equal` is `true`, else `None`.
-///
-/// Mirrors the module-level `compare()` in `pymoo.operators.selection.tournament`,
-/// including the `@default_random_state` decorator behaviour (random_state is
-/// optional; `None` is accepted and treated as "no randomness available").
+/// Mirrors the module-level `compare()` in `pymoo.operators.selection.tournament`.
 pub fn compare(
     a: usize,
     a_val: f64,
@@ -145,7 +137,9 @@ pub fn compare(
     random_state: Option<&mut StdRng>,
 ) -> Option<usize> {
     let return_random_if_equal = return_random_if_equal.unwrap_or(false);
-    let random_state = random_state.unwrap_or(&mut default_random_state());
+    let mut fallback_rng = default_random_state();
+    let rng = random_state.unwrap_or(&mut fallback_rng);
+
     match method {
         CompareMethod::LargerIsBetter => {
             if a_val > b_val {
@@ -153,7 +147,7 @@ pub fn compare(
             } else if a_val < b_val {
                 Some(b)
             } else if return_random_if_equal {
-                Some(*[a, b].choose(random_state).unwrap())
+                Some(*[a, b].choose(rng).unwrap())
             } else {
                 None
             }
@@ -164,7 +158,7 @@ pub fn compare(
             } else if a_val > b_val {
                 Some(b)
             } else if return_random_if_equal {
-                Some(*[a, b].choose(random_state).unwrap())
+                Some(*[a, b].choose(rng).unwrap())
             } else {
                 None
             }
