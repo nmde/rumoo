@@ -119,7 +119,10 @@ pub fn find_non_dominated(f: &Array2<f64>, _f: Option<&Array2<f64>>) -> Vec<usiz
     match _f {
         None => {
             // Mirrors: indices = func(F.astype(float)); return np.array(indices, dtype=int)
-            find_non_dominated_fast(f)
+            fast_non_dominated_sort(f, None, None)
+                .into_iter()
+                .next()
+                .unwrap_or_default()
         }
         Some(other) => {
             // Mirrors: M = Dominator.calc_domination_matrix(F, _F)

@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use ndarray::{Array1, Array2, Axis, s};
 
-use crate::util::misc::find_duplicates;
+use crate::{functions::pruning_cd::calc_pcd, util::misc::find_duplicates};
 
 pub enum CrowdingFunctionType {
     Cd,

@@ -1,6 +1,7 @@
 mod _test;
 mod algorithms;
 mod core;
+mod functions;
 mod indicators;
 mod operators;
 mod termination;
