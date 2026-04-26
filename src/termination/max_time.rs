@@ -1,20 +1,53 @@
-import time
+use crate::{
+    core::{
+        algorithm::Algorithm,
+        termination::{Termination, TerminationBase},
+    },
+    util::misc::time_to_int,
+};
 
-from pymoo.core.termination import Termination
-from pymoo.util.misc import time_to_int
+/// Mirrors `pymoo.termination.max_time.TimeBasedTermination`.
+pub struct TimeBasedTermination {
+    pub base: TerminationBase,
+    pub max_time: f64,
+}
 
+impl TimeBasedTermination {
+    /// Mirrors `TimeBasedTermination.__init__` for numeric `max_time` (seconds).
+    pub fn new(max_time: f64) -> Self {
+        Self {
+            base: TerminationBase::new(),
+            max_time,
+        }
+    }
 
-class TimeBasedTermination(Termination):
+    /// Mirrors `TimeBasedTermination.__init__` for string `max_time`.
+    ///
+    /// Parses the string via `time_to_int` (e.g. `"00:30:00"` → seconds).
+    pub fn from_str(max_time: &str) -> Self {
+        Self {
+            base: TerminationBase::new(),
+            max_time: time_to_int(max_time)? as f64,
+        }
+    }
+}
 
-    def __init__(self, max_time) -> None:
-        super().__init__()
-        if isinstance(max_time, str):
-            self.max_time = time_to_int(max_time)
-        elif isinstance(max_time, int) or isinstance(max_time, float):
-            self.max_time = max_time
-        else:
-            raise Exception("Either provide the time as a string or an integer.")
+impl Termination for TimeBasedTermination {
+    fn base(&self) -> &TerminationBase {
+        &self.base
+    }
 
-    def _update(self, algorithm):
-        elapsed = time.time() - algorithm.start_time
-        return elapsed / self.max_time
+    fn base_mut(&mut self) -> &mut TerminationBase {
+        &mut self.base
+    }
+
+    /// Mirrors `TimeBasedTermination._update`:
+    /// `elapsed = time.time() - algorithm.start_time; return elapsed / self.max_time`.
+    fn _update(&mut self, algorithm: &mut dyn Algorithm) -> f64 {
+        let elapsed = algorithm
+            .base()
+            .start_time
+            .map_or(0.0, |t| t.elapsed().as_secs_f64());
+        elapsed / self.max_time
+    }
+}

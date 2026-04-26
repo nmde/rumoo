@@ -13,6 +13,7 @@ use crate::{
         result::AlgorithmResult,
         termination::Termination,
     },
+    termination::default::{DefaultMultiObjectiveTermination, DefaultSingleObjectiveTermination},
     util::{
         display::{display::Display, output::Output},
         optimum::filter_optimum,
@@ -442,9 +443,13 @@ pub trait LoopwiseAlgorithm: Algorithm {
 /// Mirrors `pymoo.core.algorithm.default_termination(problem)`.
 pub fn default_termination(n_obj: usize) -> Box<dyn Termination> {
     if n_obj > 1 {
-        Box::new(DefaultMultiObjectiveTermination::new())
+        Box::new(DefaultMultiObjectiveTermination::new(
+            None, None, None, None, None, None, None,
+        ))
     } else {
-        Box::new(DefaultSingleObjectiveTermination::new())
+        Box::new(DefaultSingleObjectiveTermination::new(
+            None, None, None, None, None, None,
+        ))
     }
 }
 
