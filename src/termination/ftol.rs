@@ -1,144 +1,359 @@
-import numpy as np
+use ndarray::{Array1, Array2};
 
-from pymoo.indicators.hv import Hypervolume
-from pymoo.indicators.igd import IGD
-from pymoo.util.normalization import normalize
-from pymoo.termination.delta import DeltaToleranceTermination
+use crate::{
+    core::{
+        algorithm::Algorithm,
+        individual::{IndividualField, Value},
+        termination::{Termination, TerminationBase},
+    },
+    termination::delta::{DeltaToleranceBase, DeltaToleranceTermination},
+};
 
+/// Mirrors `pymoo.termination.ftol.calc_delta(a, b)`:
+/// `np.max(np.abs(a - b))`.
+pub fn calc_delta(a: &Array1<f64>, b: &Array1<f64>) -> f64 {
+    (a - b).mapv(f64::abs).fold(f64::NEG_INFINITY, f64::max)
+}
 
-def calc_delta(a, b):
-    return np.max(np.abs((a - b)))
+/// Mirrors `pymoo.termination.ftol.calc_delta_norm(a, b, norm)`:
+/// `np.max(np.abs((a - b) / norm))`.
+pub fn calc_delta_norm(a: &Array1<f64>, b: &Array1<f64>, norm: &Array1<f64>) -> f64 {
+    ((a - b) / norm)
+        .mapv(f64::abs)
+        .fold(f64::NEG_INFINITY, f64::max)
+}
 
+// ---------------------------------------------------------------------------
+// SingleObjectiveSpaceTermination
+// ---------------------------------------------------------------------------
 
-def calc_delta_norm(a, b, norm):
-    return np.max(np.abs((a - b) / norm))
+/// Mirrors `pymoo.termination.ftol.SingleObjectiveSpaceTermination`.
+pub struct SingleObjectiveSpaceTermination {
+    pub delta: DeltaToleranceBase,
+    pub only_feas: bool,
+}
 
+impl SingleObjectiveSpaceTermination {
+    /// Mirrors `SingleObjectiveSpaceTermination.__init__(tol=1e-6, only_feas=True)`.
+    pub fn new(tol: Option<f64>, only_feas: Option<bool>) -> Self {
+        Self {
+            delta: DeltaToleranceBase::new(tol.unwrap_or(1e-6), Some(0))?,
+            only_feas: only_feas.unwrap_or(true),
+        }
+    }
+}
 
-class SingleObjectiveSpaceTermination(DeltaToleranceTermination):
+impl Termination for SingleObjectiveSpaceTermination {
+    fn base(&self) -> &TerminationBase {
+        &self.delta.base
+    }
 
-    def __init__(self, tol=1e-6, only_feas=True, **kwargs) -> None:
-        super().__init__(tol, **kwargs)
-        self.only_feas = only_feas
+    fn base_mut(&mut self) -> &mut TerminationBase {
+        &mut self.delta.base
+    }
 
-    def _delta(self, prev, current):
-        if prev == np.inf or current == np.inf:
-            return np.inf
-        else:
-            return max(0, prev - current)
+    fn _update(&mut self, algorithm: &mut dyn Algorithm) -> f64 {
+        self._update_delta(algorithm)
+    }
+}
 
-    def _data(self, algorithm):
-        opt = algorithm.opt
-        f = opt.get("f")
+impl DeltaToleranceTermination for SingleObjectiveSpaceTermination {
+    fn delta_base(&self) -> &DeltaToleranceBase {
+        &self.delta
+    }
 
-        if self.only_feas:
-            f = f[opt.get("feas")]
+    fn delta_base_mut(&mut self) -> &mut DeltaToleranceBase {
+        &mut self.delta
+    }
 
-        if len(f) > 0:
-            return f.min()
-        else:
-            return np.inf
+    /// Mirrors `SingleObjectiveSpaceTermination._delta`:
+    /// returns `f64::INFINITY` if either value is infinite, else `max(0, prev - current)`.
+    fn _delta(&self, prev: f64, current: f64) -> f64 {
+        if prev.is_infinite() || current.is_infinite() {
+            f64::INFINITY
+        } else {
+            (prev - current).max(0.0)
+        }
+    }
 
+    /// Mirrors `SingleObjectiveSpaceTermination._data`:
+    /// minimum feasible F value, or `f64::INFINITY` if none.
+    fn _data(&self, algorithm: &dyn Algorithm) -> f64 {
+        let opt = match algorithm.base().opt.as_ref() {
+            Some(o) => o,
+            None => return f64::INFINITY,
+        };
 
-class MultiObjectiveSpaceTermination(DeltaToleranceTermination):
+        let f_mat = match opt.get(&IndividualField::F) {
+            Value::FloatMatrix(m) => m,
+            _ => return f64::INFINITY,
+        };
 
-    def __init__(self, tol=0.0025, only_feas=True, **kwargs):
-        super().__init__(tol, **kwargs)
-        self.delta_ideal = None
-        self.delta_nadir = None
-        self.delta_f = None
-        self.only_feas = only_feas
+        if self.only_feas {
+            let feas = match opt.get(&IndividualField::Feas) {
+                Value::BoolArray(b) => b,
+                _ => return f64::INFINITY,
+            };
+            let vals: Vec<f64> = f_mat
+                .outer_iter()
+                .zip(feas.iter())
+                .filter(|(_, &ok)| ok)
+                .map(|(row, _)| row[0])
+                .collect();
+            if vals.is_empty() {
+                f64::INFINITY
+            } else {
+                vals.into_iter().fold(f64::INFINITY, f64::min)
+            }
+        } else {
+            f_mat.iter().cloned().fold(f64::INFINITY, f64::min)
+        }
+    }
+}
 
-    def _data(self, algorithm):
-        feas, F = algorithm.opt.get("feas", "F")
+// ---------------------------------------------------------------------------
+// MultiObjectiveSpaceTermination
+// ---------------------------------------------------------------------------
 
-        if self.only_feas:
-            F = F[feas]
+/// Internal snapshot of the Pareto-front state for one iteration.
+struct FrontData {
+    ideal: Option<Array1<f64>>,
+    nadir: Option<Array1<f64>>,
+    f: Array2<f64>,
+    feas: bool,
+}
 
-        if len(F) > 0:
-            return dict(ideal=F.min(axis=0), nadir=F.max(axis=0), F=F, feas=True)
-        else:
-            return dict(ideal=None, nadir=None, F=F, feas=False)
+/// Mirrors `pymoo.termination.ftol.MultiObjectiveSpaceTermination`.
+pub struct MultiObjectiveSpaceTermination {
+    pub delta: DeltaToleranceBase,
+    pub only_feas: bool,
+    pub delta_ideal: Option<f64>,
+    pub delta_nadir: Option<f64>,
+    pub delta_f: Option<f64>,
+    prev_data: Option<FrontData>,
+}
 
-    def _delta(self, prev, current):
+impl MultiObjectiveSpaceTermination {
+    /// Mirrors `MultiObjectiveSpaceTermination.__init__(tol=0.0025, only_feas=True)`.
+    pub fn new(tol: Option<f64>, only_feas: Option<bool>, n_skip: Option<usize>) -> Self {
+        Self {
+            delta: DeltaToleranceBase::new(tol.unwrap_or(0.0025), Some(n_skip.unwrap_or(0)))?,
+            only_feas: only_feas.unwrap_or(true),
+            delta_ideal: None,
+            delta_nadir: None,
+            delta_f: None,
+            prev_data: None,
+        }
+    }
 
-        if not (prev["feas"] and current["feas"]):
-            return np.inf
+    /// Mirrors `MultiObjectiveSpaceTermination._data(algorithm)`.
+    fn _data_front(&self, algorithm: &dyn Algorithm) -> FrontData {
+        let opt = match algorithm.base().opt.as_ref() {
+            None => {
+                return FrontData {
+                    ideal: None,
+                    nadir: None,
+                    f: Array2::zeros((0, 0)),
+                    feas: false,
+                };
+            }
+            Some(o) => o,
+        };
 
-        # this is the range between the nadir and the ideal point
-        norm = current["nadir"] - current["ideal"]
+        let f_mat = match opt.get(&IndividualField::F) {
+            Value::FloatMatrix(m) => m,
+            _ => {
+                return FrontData {
+                    ideal: None,
+                    nadir: None,
+                    f: Array2::zeros((0, 0)),
+                    feas: false,
+                };
+            }
+        };
 
-        # if the range is degenerated (very close to zero) - disable normalization by dividing by one
-        norm[norm < 1e-32] = 1.0
+        let f_filtered: Array2<f64> = if self.only_feas {
+            match opt.get(&IndividualField::Feas) {
+                Value::BoolArray(mask) => {
+                    let rows: Vec<_> = f_mat
+                        .outer_iter()
+                        .zip(mask.iter())
+                        .filter(|(_, &ok)| ok)
+                        .map(|(r, _)| r.to_owned())
+                        .collect();
+                    if rows.is_empty() {
+                        Array2::zeros((0, f_mat.ncols()))
+                    } else {
+                        ndarray::stack(
+                            ndarray::Axis(0),
+                            &rows.iter().map(|r| r.view()).collect::<Vec<_>>(),
+                        )
+                        .unwrap_or_else(|_| Array2::zeros((0, f_mat.ncols())))
+                    }
+                }
+                _ => f_mat.clone(),
+            }
+        } else {
+            f_mat.clone()
+        };
 
-        # calculate the change from last to current in ideal and nadir point
-        delta_ideal = calc_delta_norm(current["ideal"], prev["ideal"], norm)
-        delta_nadir = calc_delta_norm(current["nadir"], prev["nadir"], norm)
+        if f_filtered.nrows() > 0 {
+            let ideal = f_filtered.map_axis(ndarray::Axis(0), |col| {
+                col.iter().cloned().fold(f64::INFINITY, f64::min)
+            });
+            let nadir = f_filtered.map_axis(ndarray::Axis(0), |col| {
+                col.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+            });
+            FrontData {
+                ideal: Some(ideal),
+                nadir: Some(nadir),
+                f: f_filtered,
+                feas: true,
+            }
+        } else {
+            FrontData {
+                ideal: None,
+                nadir: None,
+                f: f_filtered,
+                feas: false,
+            }
+        }
+    }
 
-        # get necessary data from the current population
-        c_F, c_ideal, c_nadir = current["F"], current["ideal"], current["nadir"]
-        p_F = prev["F"]
+    /// Mirrors `MultiObjectiveSpaceTermination._delta(prev, current)`.
+    fn _delta_front(&mut self, prev: &FrontData, current: &FrontData) -> f64 {
+        if !prev.feas || !current.feas {
+            return f64::INFINITY;
+        }
 
-        # normalize last and current with respect to most recent ideal and nadir
-        c_N = normalize(c_F, c_ideal, c_nadir)
-        p_N = normalize(p_F, c_ideal, c_nadir)
+        let c_ideal = current.ideal.as_ref().unwrap();
+        let c_nadir = current.nadir.as_ref().unwrap();
+        let p_ideal = prev.ideal.as_ref().unwrap();
+        let p_nadir = prev.nadir.as_ref().unwrap();
 
-        # calculate IGD from one to another
-        delta_f = IGD(c_N).do(p_N)
+        // Mirrors: norm = current["nadir"] - current["ideal"]; norm[norm < 1e-32] = 1.0
+        let mut norm = c_nadir - c_ideal;
+        norm.mapv_inplace(|v| if v < 1e-32 { 1.0 } else { v });
 
-        # store the delta values to the object
-        self.delta_ideal, self.delta_nadir, self.delta_f = delta_ideal, delta_nadir, delta_f
+        let delta_ideal = calc_delta_norm(c_ideal, p_ideal, &norm);
+        let delta_nadir = calc_delta_norm(c_nadir, p_nadir, &norm);
 
-        return max(delta_ideal, delta_nadir, delta_f)
+        let c_n = normalize(&current.f, c_ideal, c_nadir);
+        let p_n = normalize(&prev.f, c_ideal, c_nadir);
 
+        // Mirrors: delta_f = IGD(c_N).do(p_N)
+        let delta_f = IGD::new(&c_n).do_calc(&p_n).unwrap_or(f64::INFINITY);
 
-class MultiObjectiveSpaceTerminationWithRenormalization(MultiObjectiveSpaceTermination):
+        self.delta_ideal = Some(delta_ideal);
+        self.delta_nadir = Some(delta_nadir);
+        self.delta_f = Some(delta_f);
 
-    def __init__(self,
-                 n=30,
-                 all_to_current=False,
-                 sliding_window=True,
-                 indicator="igd",
-                 **kwargs) -> None:
+        delta_ideal.max(delta_nadir).max(delta_f)
+    }
+}
 
-        super().__init__(**kwargs)
-        self.n = n
-        self.all_to_current = all_to_current
-        self.sliding_window = sliding_window
-        self.indicator = indicator
+impl Termination for MultiObjectiveSpaceTermination {
+    fn base(&self) -> &TerminationBase {
+        &self.delta.base
+    }
 
-        self.data = []
+    fn base_mut(&mut self) -> &mut TerminationBase {
+        &mut self.delta.base
+    }
 
-    def _metric(self, data):
-        ret = super()._metric(data)
+    /// Mirrors `DeltaToleranceTermination._update` with `FrontData`-typed snapshots.
+    fn _update(&mut self, algorithm: &mut dyn Algorithm) -> f64 {
+        let prev = self.prev_data.take();
+        let current = self._data_front(algorithm);
 
-        if not self.sliding_window:
-            data = self.data[-self.metric_window_size:]
+        let perc = match &prev {
+            None => 0.0,
+            Some(_)
+                if self.delta.counter > 0 && self.delta.counter % (self.delta.n_skip + 1) != 0 =>
+            {
+                self.delta.base.perc
+            }
+            Some(p) => {
+                let delta = self._delta_front(p, &current);
+                if delta <= self.delta.tol {
+                    self.prev_data = Some(current);
+                    self.delta.counter += 1;
+                    return 1.0;
+                } else {
+                    let v = delta - self.delta.tol;
+                    1.0 / (1.0 + v)
+                }
+            }
+        };
 
-        # get necessary data from the current population
-        current = data[-1]
-        c_F, c_ideal, c_nadir = current["F"], current["ideal"], current["nadir"]
+        self.prev_data = Some(current);
+        self.delta.counter += 1;
+        perc
+    }
+}
 
-        # normalize all previous generations with respect to current ideal and nadir
-        N = [normalize(e["F"], c_ideal, c_nadir) for e in data]
+impl DeltaToleranceTermination for MultiObjectiveSpaceTermination {
+    fn delta_base(&self) -> &DeltaToleranceBase {
+        &self.delta
+    }
 
-        # check if the movement of all points is significant
-        if self.all_to_current:
+    fn delta_base_mut(&mut self) -> &mut DeltaToleranceBase {
+        &mut self.delta
+    }
 
-            c_N = normalize(c_F, c_ideal, c_nadir)
-            if self.indicator == "igd":
-                delta_f = [IGD(c_N).do(N[k]) for k in range(len(N))]
-            elif self.indicator == "hv":
-                hv = Hypervolume(ref_point=np.ones(c_F.shape[1]))
-                delta_f = [hv.do(N[k]) for k in range(len(N))]
-        else:
-            delta_f = [IGD(N[k + 1]).do(N[k]) for k in range(len(N) - 1)]
+    fn _delta(&self, prev: f64, current: f64) -> f64 {
+        (prev - current).max(0.0)
+    }
 
-        ret["delta_f"] = delta_f
+    fn _data(&self, _algorithm: &dyn Algorithm) -> f64 {
+        0.0
+    }
+}
 
-        return ret
+// ---------------------------------------------------------------------------
+// MultiObjectiveSpaceTerminationWithRenormalization
+// ---------------------------------------------------------------------------
 
-    def _decide(self, metrics):
-        delta_ideal = [e["delta_ideal"] for e in metrics]
-        delta_nadir = [e["delta_nadir"] for e in metrics]
-        delta_f = [max(e["delta_f"]) for e in metrics]
-        return max(max(delta_ideal), max(delta_nadir), max(delta_f)) > self.tol
+/// Mirrors `pymoo.termination.ftol.MultiObjectiveSpaceTerminationWithRenormalization`.
+pub struct MultiObjectiveSpaceTerminationWithRenormalization {
+    pub inner: MultiObjectiveSpaceTermination,
+    pub n: usize,
+    pub all_to_current: bool,
+    pub sliding_window: bool,
+    pub indicator: String,
+}
+
+impl MultiObjectiveSpaceTerminationWithRenormalization {
+    /// Mirrors `__init__(n=30, all_to_current=False, sliding_window=True, indicator="igd")`.
+    pub fn new(
+        n: Option<usize>,
+        all_to_current: Option<bool>,
+        sliding_window: Option<bool>,
+        indicator: Option<String>,
+        tol: Option<f64>,
+        only_feas: Option<bool>,
+        n_skip: Option<usize>,
+    ) -> Self {
+        Self {
+            inner: MultiObjectiveSpaceTermination::new(tol, only_feas, n_skip),
+            n: n.unwrap_or(30),
+            all_to_current: all_to_current.unwrap_or(false),
+            sliding_window: sliding_window.unwrap_or(true),
+            indicator: indicator.unwrap_or_else(|| "igd".to_string()),
+        }
+    }
+}
+
+impl Termination for MultiObjectiveSpaceTerminationWithRenormalization {
+    fn base(&self) -> &TerminationBase {
+        self.inner.base()
+    }
+
+    fn base_mut(&mut self) -> &mut TerminationBase {
+        self.inner.base_mut()
+    }
+
+    fn _update(&mut self, algorithm: &mut dyn Algorithm) -> f64 {
+        self.inner._update(algorithm)
+    }
+}

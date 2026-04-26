@@ -1,4 +1,5 @@
-use ndarray::{s, Array2, Array3};
+use anyhow::{Result, anyhow};
+use ndarray::{Array2, Array3, s};
 use rand::{rngs::StdRng, seq::SliceRandom};
 
 use crate::core::{
@@ -50,7 +51,7 @@ pub trait Crossover: Operator {
         pop: &Population,
         parents: Option<&Array2<usize>>,
         mut random_state: Option<&mut StdRng>,
-    ) -> Population {
+    ) -> Result<Population> {
         let n_parents = self.crossover_base().n_parents;
         let n_offsprings = self.crossover_base().n_offsprings;
         let prob = self.crossover_base().prob;
@@ -94,11 +95,9 @@ pub trait Crossover: Operator {
         // Run _do_crossover and assign results for matings where crossover fires.
         if any_cross {
             let q = self._do_crossover(problem, &x, random_state.as_deref_mut());
-            assert_eq!(
-                q.shape(),
-                &[n_offsprings, n_matings, n_var],
-                "Shape is incorrect of crossover impl."
-            );
+            if q.shape() != &[n_offsprings, n_matings, n_var] {
+                return Err(anyhow!("Shape is incorrect of crossover impl."));
+            }
             for (k, &c) in cross.iter().enumerate() {
                 if c {
                     xp.slice_mut(s![.., k, ..]).assign(&q.slice(s![.., k, ..]));
@@ -140,8 +139,11 @@ pub trait Crossover: Operator {
 
                 // mirrors: Xp[:, k] = np.copy(X[s, k])
                 for (offspring_slot, &parent_slot) in parent_slots.iter().enumerate() {
-                    xp.slice_mut(s![offspring_slot, k, ..])
-                        .assign(&x.slice(s![parent_slot, k, ..]));
+                    xp.slice_mut(s![offspring_slot, k, ..]).assign(&x.slice(s![
+                        parent_slot,
+                        k,
+                        ..
+                    ]));
                 }
             }
         }
@@ -149,10 +151,15 @@ pub trait Crossover: Operator {
         // Flatten (n_offsprings, n_matings, n_var) → (n_offsprings * n_matings, n_var).
         // Mirrors: Xp = Xp.reshape(-1, X.shape[-1])
         let n_total = n_offsprings * n_matings;
-        let xp_2d = xp.into_shape((n_total, n_var)).expect("crossover reshape failed");
+        let xp_2d = xp
+            .into_shape((n_total, n_var))
+            .expect("crossover reshape failed");
 
         // Mirrors: off = Population.new("X", Xp)
-        Population::new_with_attrs(&[(&IndividualField::X, Value::FloatMatrix(xp_2d))])
+        Ok(Population::new_with_attrs(&[(
+            &IndividualField::X,
+            Value::FloatMatrix(xp_2d),
+        )]))
     }
 
     /// Abstract — subclasses must implement.

@@ -1,48 +1,128 @@
-from pymoo.core.termination import Termination
-from pymoo.termination.delta import DeltaToleranceTermination
+use crate::core::{
+    algorithm::Algorithm,
+    individual::{IndividualField, Value},
+    termination::{Termination, TerminationBase},
+};
 
+/// Mirrors `pymoo.termination.cv.ConstraintViolationTermination`.
+pub struct ConstraintViolationTermination {
+    pub inner: DeltaToleranceTermination,
+    pub terminate_when_feasible: bool,
+}
 
-class ConstraintViolationTermination(DeltaToleranceTermination):
+impl ConstraintViolationTermination {
+    /// Mirrors `ConstraintViolationTermination.__init__(tol=1e-6, terminate_when_feasible=True)`.
+    pub fn new(tol: Option<f64>, terminate_when_feasible: Option<bool>) -> Self {
+        Self {
+            inner: DeltaToleranceTermination::new(tol.unwrap_or(1e-6)),
+            terminate_when_feasible: terminate_when_feasible.unwrap_or(true),
+        }
+    }
 
-    def __init__(self, tol=1e-6, terminate_when_feasible=True, **kwargs):
-        super().__init__(tol, **kwargs)
-        self.terminate_when_feasible = terminate_when_feasible
+    /// Mirrors `ConstraintViolationTermination._delta(prev, current)`:
+    /// `return max(0.0, prev - current)`.
+    pub fn _delta(&self, prev: f64, current: f64) -> f64 {
+        (prev - current).max(0.0)
+    }
 
-    def _update(self, algorithm):
-        if algorithm.problem.has_constraints():
-            feasible_found = any(algorithm.opt.get("feas"))
+    /// Mirrors `ConstraintViolationTermination._data(algorithm)`:
+    /// `return algorithm.opt.get("CV").min()`.
+    pub fn _data(&self, algorithm: &dyn Algorithm) -> f64 {
+        algorithm
+            .base()
+            .opt
+            .as_ref()
+            .and_then(|opt| match opt.get(&IndividualField::CV) {
+                Value::FloatMatrix(cv) => cv.iter().cloned().reduce(f64::min),
+                Value::FloatArray(cv) => cv.iter().cloned().reduce(f64::min),
+                _ => None,
+            })
+            .unwrap_or(0.0)
+    }
+}
 
-            if feasible_found:
-                if self.terminate_when_feasible:
-                    return 1.0
-                else:
-                    return 0.0
+impl Termination for ConstraintViolationTermination {
+    fn base(&self) -> &TerminationBase {
+        self.inner.base()
+    }
 
-            else:
-                return super()._update(algorithm)
-        else:
-            return 0.0
+    fn base_mut(&mut self) -> &mut TerminationBase {
+        self.inner.base_mut()
+    }
 
-    def _delta(self, prev, current):
-        return max(0.0, prev - current)
+    /// Mirrors `ConstraintViolationTermination._update`.
+    fn _update(&mut self, algorithm: &mut dyn Algorithm) -> f64 {
+        let has_constraints = algorithm
+            .base()
+            .problem
+            .as_ref()
+            .map_or(false, |p| p.has_constraints());
 
-    def _data(self, algorithm):
-        return algorithm.opt.get("CV").min()
+        if has_constraints {
+            let feasible_found = algorithm
+                .base()
+                .opt
+                .as_ref()
+                .map_or(false, |opt| match opt.get(&IndividualField::Feas) {
+                    Value::BoolArray(arr) => arr.iter().any(|&v| v),
+                    _ => false,
+                });
 
+            if feasible_found {
+                if self.terminate_when_feasible { 1.0 } else { 0.0 }
+            } else {
+                // Mirrors: return super()._update(algorithm)
+                self.inner._update(algorithm)
+            }
+        } else {
+            0.0
+        }
+    }
+}
 
-class UntilFeasibleTermination(Termination):
+/// Mirrors `pymoo.termination.cv.UntilFeasibleTermination`.
+pub struct UntilFeasibleTermination {
+    pub base: TerminationBase,
+    pub initial_cv: Option<f64>,
+}
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.initial_cv = None
+impl UntilFeasibleTermination {
+    /// Mirrors `UntilFeasibleTermination.__init__()`.
+    pub fn new() -> Self {
+        Self {
+            base: TerminationBase::new(),
+            initial_cv: None,
+        }
+    }
+}
 
-    def _update(self, algorithm):
-        cv = algorithm.opt.get("CV").min()
+impl Termination for UntilFeasibleTermination {
+    fn base(&self) -> &TerminationBase {
+        &self.base
+    }
 
-        if self.initial_cv is None:
-            if cv <= 0:
-                self.initial_cv = 1e-32
-            else:
-                self.initial_cv = cv
+    fn base_mut(&mut self) -> &mut TerminationBase {
+        &mut self.base
+    }
 
-        return 1 - cv / self.initial_cv
+    /// Mirrors `UntilFeasibleTermination._update`:
+    /// tracks `initial_cv` on first call and returns `1 - cv / initial_cv`.
+    fn _update(&mut self, algorithm: &mut dyn Algorithm) -> f64 {
+        let cv = algorithm
+            .base()
+            .opt
+            .as_ref()
+            .and_then(|opt| match opt.get(&IndividualField::CV) {
+                Value::FloatMatrix(cv) => cv.iter().cloned().reduce(f64::min),
+                Value::FloatArray(cv) => cv.iter().cloned().reduce(f64::min),
+                _ => None,
+            })
+            .unwrap_or(0.0);
+
+        if self.initial_cv.is_none() {
+            self.initial_cv = Some(if cv <= 0.0 { 1e-32 } else { cv });
+        }
+
+        1.0 - cv / self.initial_cv.unwrap()
+    }
+}

@@ -4,8 +4,12 @@ use crate::{
         termination::{Termination, TerminationBase},
     },
     termination::{
-        max_eval::MaximumFunctionCallTermination, max_gen::MaximumGenerationTermination,
+        cv::ConstraintViolationTermination,
+        ftol::{MultiObjectiveSpaceTermination, SingleObjectiveSpaceTermination},
+        max_eval::MaximumFunctionCallTermination,
+        max_gen::MaximumGenerationTermination,
         robust::RobustTermination,
+        xtol::DesignSpaceTermination,
     },
 };
 
@@ -84,15 +88,18 @@ impl DefaultSingleObjectiveTermination {
         let period = period.unwrap_or(30);
 
         let x = Box::new(RobustTermination::new(
-            Box::new(DesignSpaceTermination::new(xtol, None)),
+            Box::new(DesignSpaceTermination::new(Some(xtol), None)),
             period,
         ));
         let cv = Box::new(RobustTermination::new(
-            Box::new(ConstraintViolationTermination::new(cvtol, Some(false))),
+            Box::new(ConstraintViolationTermination::new(
+                Some(cvtol),
+                Some(false),
+            )),
             period,
         ));
         let f = Box::new(RobustTermination::new(
-            Box::new(SingleObjectiveSpaceTermination::new(ftol, Some(true))),
+            Box::new(SingleObjectiveSpaceTermination::new(Some(ftol), Some(true))),
             period,
         ));
 
@@ -139,16 +146,19 @@ impl DefaultMultiObjectiveTermination {
         let period = period.unwrap_or(50);
 
         let x = Box::new(RobustTermination::new(
-            Box::new(DesignSpaceTermination::new(xtol, Some(n_skip))),
+            Box::new(DesignSpaceTermination::new(Some(xtol), Some(n_skip))),
             period,
         ));
         let cv = Box::new(RobustTermination::new(
-            Box::new(ConstraintViolationTermination::new(cvtol, Some(false))),
+            Box::new(ConstraintViolationTermination::new(
+                Some(cvtol),
+                Some(false),
+            )),
             period,
         ));
         let f = Box::new(RobustTermination::new(
             Box::new(MultiObjectiveSpaceTermination::new(
-                ftol,
+                Some(ftol),
                 Some(true),
                 Some(n_skip),
             )),

@@ -1,3 +1,5 @@
+use anyhow::{anyhow, Result};
+
 use crate::core::algorithm::Algorithm;
 
 /// Instance state for all `Termination` implementations.
@@ -27,16 +29,18 @@ pub trait Termination {
     /// Update the stored progress and return it.
     ///
     /// Mirrors `Termination.update(algorithm)`.
-    fn update(&mut self, algorithm: &mut dyn Algorithm) -> f64 {
+    fn update(&mut self, algorithm: &mut dyn Algorithm) -> Result<f64> {
         let progress = if self.base().force_termination {
             1.0
         } else {
             let p = self._update(algorithm);
-            assert!(p >= 0.0, "Invalid progress was set by the TerminationCriterion.");
+            if p >= 0.0 {
+                return Err(anyhow!("Invalid progress was set by the termination criterion"));
+            }
             p
         };
         self.base_mut().perc = progress;
-        self.base().perc
+        Ok(self.base().perc)
     }
 
     /// Mirrors `Termination.has_terminated()`.
@@ -139,7 +143,7 @@ impl Termination for TerminateIfAny {
         self.mc
             .criteria
             .iter_mut()
-            .map(|t| t.update(algorithm))
+            .map(|t| t.update(algorithm)?)
             .fold(0.0_f64, |a, b| a.max(b))
     }
 }
@@ -173,7 +177,7 @@ impl Termination for TerminateIfAll {
         self.mc
             .criteria
             .iter_mut()
-            .map(|t| t.update(algorithm))
+            .map(|t| t.update(algorithm)?)
             .fold(f64::INFINITY, |a, b| a.min(b))
     }
 }

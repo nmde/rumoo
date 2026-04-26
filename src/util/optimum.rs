@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use crate::{
     core::{
         individual::{IndividualField, Value},
@@ -24,8 +26,8 @@ pub fn filter_optimum(pop: &Population, least_infeasible: Option<bool>) -> Optio
     // Mirrors: ret = pop[pop.get("feas")]
     let ret = match pop.get(&IndividualField::Feas) {
         Value::BoolArray(mask) => pop.select_where(&mask),
-        _ => Population::empty(0),
-    };
+        _ => Population::empty(0)?,
+    }?;
 
     if !ret.is_empty() {
         // Mirrors: F = ret.get("F")
@@ -67,7 +69,7 @@ pub fn filter_optimum(pop: &Population, least_infeasible: Option<bool>) -> Optio
 /// Mirrors `np.argmin(…)` for 1-D float sequences.
 fn argmin_f64(iter: impl Iterator<Item = f64>) -> usize {
     iter.enumerate()
-        .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
         .map(|(i, _)| i)
         .unwrap_or(0)
 }

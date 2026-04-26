@@ -1,6 +1,9 @@
-use crate::core::{
-    algorithm::Algorithm,
-    termination::{Termination, TerminationBase},
+use crate::{
+    core::{
+        algorithm::Algorithm,
+        termination::{Termination, TerminationBase},
+    },
+    util::sliding_window::SlidingWindow,
 };
 
 /// Mirrors `pymoo.termination.robust.RobustTermination`.

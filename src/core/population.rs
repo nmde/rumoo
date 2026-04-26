@@ -3,6 +3,7 @@ use std::{
     slice::{Iter, IterMut},
 };
 
+use anyhow::{Result, anyhow};
 use ndarray::{Array1, Array2};
 
 use crate::core::individual::{Individual, IndividualField, Value, calc_cv as calc_cv_individual};
@@ -42,15 +43,16 @@ impl Population {
 
     /// Set a per-individual attribute from a `Vec<Value>` whose length equals the population size.
     /// Mirrors `pop.set("crowding", crowding_array)`.
-    pub fn set_each(&mut self, key: &IndividualField, values: Vec<Value>) {
-        assert_eq!(
-            values.len(),
-            self.individuals.len(),
-            "Population::set_each: values length must match population size"
-        );
+    pub fn set_each(&mut self, key: &IndividualField, values: Vec<Value>) -> Result<()> {
+        if values.len() != self.individuals.len() {
+            return Err(anyhow!(
+                "Population::set_each values length must match population size"
+            ));
+        }
         for (ind, val) in self.individuals.iter_mut().zip(values) {
             ind.set(key, val);
         }
+        Ok(())
     }
 
     /// Collect a named attribute from all individuals and stack into an array.
@@ -155,7 +157,7 @@ impl Population {
 
     pub fn empty(size: usize) -> Self {
         Self {
-            individuals: (0..size).map(|_| Individual::new()).collect(),
+            individuals: (0..size).map(|_| Individual::new(None)).collect(),
         }
     }
 
@@ -215,16 +217,18 @@ impl Population {
 
     /// Boolean-mask selection.
     /// Mirrors `pop[mask]` in numpy.
-    pub fn select_where(&self, mask: &Array1<bool>) -> Self {
-        assert_eq!(mask.len(), self.individuals.len());
-        Self {
+    pub fn select_where(&self, mask: &Array1<bool>) -> Result<Self> {
+        if mask.len() != self.individuals.len() {
+            return Err(anyhow!("Mask size must match number of individuals"));
+        }
+        Ok(Self {
             individuals: self
                 .individuals
                 .iter()
                 .zip(mask.iter())
                 .filter_map(|(ind, &keep)| if keep { Some(ind.clone()) } else { None })
                 .collect(),
-        }
+        })
     }
 }
 
@@ -333,6 +337,6 @@ pub fn calc_cv(pop: &Population, config: Option<&CvConfig>) -> Array1<f64> {
     Array1::from_shape_fn(n, |i| {
         let g_row = g_mat.map(|m| m.row(i).to_owned());
         let h_row = h_mat.map(|m| m.row(i).to_owned());
-        calc_cv_individual(g_row.as_ref(), h_row.as_ref(), config)
+        calc_cv_individual(g_row, h_row, Some(config))
     })
 }
