@@ -10,20 +10,15 @@ use crate::{
     },
     operators::{
         selection::tournament::{CompareMethod, TournamentSelection, compare},
-        survival::rank_and_crowding::classes::RankAndCrowding,
+        survival::rank_and_crowding::{classes::RankAndCrowding, metrics::CrowdingFunctionType},
     },
     termination::default::DefaultMultiObjectiveTermination,
-    util::{display::output::Output, dominator::Dominator, misc::has_feasible},
+    util::{
+        display::{multi::MultiObjectiveOutput, output::Output},
+        dominator::Dominator,
+        misc::has_feasible,
+    },
 };
-
-/*
-from pymoo.algorithms.base.genetic import GeneticAlgorithm
-from pymoo.operators.crossover.sbx import SBX
-from pymoo.operators.mutation.pm import PM
-from pymoo.operators.survival.rank_and_crowding import RankAndCrowding
-from pymoo.operators.sampling.rnd import FloatRandomSampling
-from pymoo.util.display.multi import MultiObjectiveOutput;
-*/
 
 pub fn binary_tournament(
     pop: &Population,
@@ -134,21 +129,28 @@ impl NSGA2 {
             Some(Box::new(binary_tournament)),
             None,
         )));
-        let survival = survival.unwrap_or_else(|| Box::new(RankAndCrowding::new(None, Some("cd"))));
+        let survival = survival.unwrap_or_else(|| {
+            Box::new(RankAndCrowding::new(None, Some(&CrowdingFunctionType::Cd)))
+        });
         let output = output.unwrap_or_else(MultiObjectiveOutput::new);
 
         let mut algorithm = GeneticAlgorithm::new(
-            pop_size,
-            sampling,
-            selection,
-            crossover,
-            mutation,
-            survival,
-            output,
-            advance_after_initial_infill,
+            Some(pop_size),
+            Some(sampling),
+            Some(selection),
+            Some(crossover),
+            Some(mutation),
+            Some(survival),
+            None,
+            None,
+            None,
+            None,
+            Some(advance_after_initial_infill),
         );
 
-        algorithm.termination = Box::new(DefaultMultiObjectiveTermination::new());
+        algorithm.termination = Box::new(DefaultMultiObjectiveTermination::new(
+            None, None, None, None, None, None, None,
+        ));
 
         Self {
             algorithm,
