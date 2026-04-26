@@ -1,5 +1,4 @@
 use std::{
-    any::Any,
     collections::HashMap,
     time::{Duration, Instant},
 };
@@ -57,7 +56,7 @@ pub struct AlgorithmResult {
     /// Snapshots of the algorithm state saved each generation (when enabled).
     ///
     /// Mirrors `Result.history`.
-    pub history: Vec<Box<dyn Any + Send + Sync>>,
+    pub history: Vec<Box<dyn Algorithm>>,
 
     /// Arbitrary data carried by the algorithm at the end of the run.
     ///

@@ -13,7 +13,10 @@ use crate::{
         result::AlgorithmResult,
         termination::Termination,
     },
-    util::display::{display::Display, output::Output},
+    util::{
+        display::{display::Display, output::Output},
+        optimum::filter_optimum,
+    },
 };
 
 /// Instance state shared by all `Algorithm` implementations.
@@ -32,7 +35,7 @@ pub struct AlgorithmBase {
     pub seed: Option<u64>,
     pub random_state: Option<StdRng>,
     pub evaluator: Box<dyn Evaluator>,
-    pub history: Vec<Box<dyn Any + Send + Sync>>,
+    pub history: Vec<Box<dyn Algorithm>>,
     pub pop: Option<Population>,
     pub off: Option<Population>,
     pub opt: Option<Population>,
@@ -267,8 +270,12 @@ pub trait Algorithm {
             None => None,
             Some(ref o) if o.is_empty() => None,
             Some(ref o) if !o.any_feasible() => {
-                if self.base().return_least_infeasible {
-                    self.base().opt.as_ref().map(|o| filter_optimum(o, true))
+                if self.base().return_least_infeasible && self.base().opt.is_some() {
+                    self.base()
+                        .opt
+                        .as_ref()
+                        .unwrap()
+                        .map(|o| filter_optimum(o, Some(true)))
                 } else {
                     None
                 }
@@ -309,7 +316,7 @@ pub trait Algorithm {
     fn _set_optimum(&mut self) {
         let pop = self.base().pop.clone();
         if let Some(ref p) = pop {
-            self.base_mut().opt = Some(filter_optimum(p, true));
+            self.base_mut().opt = filter_optimum(p, Some(true));
         }
     }
 

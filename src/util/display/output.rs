@@ -179,5 +179,5 @@ impl Callback for OutputBase {
 }
 
 pub trait Output {
-    fn base() -> OutputBase;
+    fn base(&self) -> OutputBase;
 }
