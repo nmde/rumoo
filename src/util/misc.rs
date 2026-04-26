@@ -12,6 +12,7 @@ use rand::{rngs::StdRng, seq::SliceRandom};
 use crate::{
     core::{
         algorithm::Algorithm,
+        evaluator::Evaluator,
         individual::{IndividualField, Value},
         population::Population,
         problem::Problem,
@@ -236,7 +237,10 @@ pub fn norm_eucl_dist(
     b: &Array2<f64>,
 ) -> Result<Array2<f64>> {
     let (xl, xu) = problem.bounds();
-    norm_eucl_dist_by_bounds(a, b, xl, xu)
+    if xl.is_none() || xu.is_none() {
+        return Err(anyhow!("Problem has undefined bounds"));
+    }
+    norm_eucl_dist_by_bounds(a, b, *xl.unwrap(), *xu.unwrap())
 }
 
 // -----------------------------------------------
@@ -280,7 +284,10 @@ pub fn norm_manhatten_dist(
     b: &Array2<f64>,
 ) -> Result<Array2<f64>> {
     let (xl, xu) = problem.bounds();
-    norm_manhatten_dist_by_bounds(a, b, xl, xu)
+    if xl.is_none() || xu.is_none() {
+        return Err(anyhow!("Problem has undefined bounds"));
+    }
+    norm_manhatten_dist_by_bounds(a, b, *xl.unwrap(), *xu.unwrap())
 }
 
 // -----------------------------------------------
@@ -328,7 +335,10 @@ pub fn norm_tchebychev_dist(
     b: &Array2<f64>,
 ) -> Result<Array2<f64>> {
     let (xl, xu) = problem.bounds();
-    norm_tchebychev_dist_by_bounds(a, b, xl, xu)
+    if xl.is_none() || xu.is_none() {
+        return Err(anyhow!("Problem has undefined bounds"));
+    }
+    norm_tchebychev_dist_by_bounds(a, b, *xl.unwrap(), *xu.unwrap())
 }
 
 // -----------------------------------------------

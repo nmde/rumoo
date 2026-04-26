@@ -1,52 +1,124 @@
-class Result:
-    """
-    The resulting object of an optimization run.
-    """
+use std::{
+    any::Any,
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
-    def __init__(self) -> None:
-        super().__init__()
+use crate::core::{
+    algorithm::Algorithm, individual::Value, population::Population, problem::Problem,
+};
 
-        self.opt = None
-        self.success = None
-        self.message = None
+/// The result of an optimization run.
+///
+/// Mirrors `pymoo.core.result.Result`.
+pub struct AlgorithmResult {
+    /// The optimal solution(s) found.
+    pub opt: Option<Population>,
 
-        # ! other attributes to be set as well
+    pub success: Option<bool>,
+    pub message: Option<String>,
 
-        # the problem that was solved
-        self.problem = None
+    /// The problem that was solved.
+    pub problem: Option<Box<dyn Problem>>,
 
-        # the archive stored during the run
-        self.archive = None
+    /// The archive maintained during the run.
+    pub archive: Option<Population>,
 
-        # the optimal solution for that problem
-        self.pf = None
+    /// The true Pareto front of the problem, if known.
+    pub pf: Option<Population>,
 
-        # the algorithm that was used for optimization
-        self.algorithm = None
+    /// The algorithm that produced this result.
+    pub algorithm: Option<Box<dyn Algorithm>>,
 
-        # the final population if it applies
-        self.pop = None
+    /// The final population.
+    pub pop: Option<Population>,
 
-        # directly the values of opt
-        self.X, self.F, self.CV, self.G, self.H = None, None, None, None, None
+    // Convenience copies of the optimal values.
+    /// Mirrors `Result.X`.
+    pub x: Option<Value>,
+    /// Mirrors `Result.F`.
+    pub f: Option<Value>,
+    /// Mirrors `Result.CV`.
+    pub cv: Option<Value>,
+    /// Mirrors `Result.G`.
+    pub g: Option<Value>,
+    /// Mirrors `Result.H`.
+    pub h: Option<Value>,
 
-        # all the timings that are stored of the run
-        self.start_time, self.end_time, self.exec_time = None, None, None
+    /// Mirrors `Result.start_time`.
+    pub start_time: Option<Instant>,
+    /// Mirrors `Result.end_time`.
+    pub end_time: Option<Instant>,
+    /// Wall-clock duration of the run.
+    ///
+    /// Mirrors `Result.exec_time = end_time - start_time`.
+    pub exec_time: Option<Duration>,
 
-        # the history of the optimization run is they were saved
-        self.history = []
+    /// Snapshots of the algorithm state saved each generation (when enabled).
+    ///
+    /// Mirrors `Result.history`.
+    pub history: Vec<Box<dyn Any + Send + Sync>>,
 
-        # data stored within the algorithm
-        self.data = None
+    /// Arbitrary data carried by the algorithm at the end of the run.
+    ///
+    /// Mirrors `Result.data`.
+    pub data: HashMap<String, Value>,
+}
 
-    @property
-    def cv(self):
-        return self.CV[0]
+impl AlgorithmResult {
+    /// Mirrors `Result.__init__()`.
+    pub fn new() -> Self {
+        Self {
+            opt: None,
+            success: None,
+            message: None,
+            problem: None,
+            archive: None,
+            pf: None,
+            algorithm: None,
+            pop: None,
+            x: None,
+            f: None,
+            cv: None,
+            g: None,
+            h: None,
+            start_time: None,
+            end_time: None,
+            exec_time: None,
+            history: Vec::new(),
+            data: HashMap::new(),
+        }
+    }
 
-    @property
-    def f(self):
-        return self.F[0]
+    /// Scalar constraint violation of the (first) optimal solution.
+    ///
+    /// Mirrors `Result.cv` property: `return self.CV[0]`.
+    pub fn cv(&self) -> Option<f64> {
+        match &self.cv {
+            Some(Value::Float(f)) => Some(*f),
+            Some(Value::FloatArray(arr)) if !arr.is_empty() => Some(arr[0]),
+            _ => None,
+        }
+    }
 
-    @property
-    def feas(self):
-        return self.cv <= 0
+    /// Objective value(s) of the (first) optimal solution.
+    ///
+    /// Mirrors `Result.f` property: `return self.F[0]`.
+    pub fn f(&self) -> Option<Value> {
+        match &self.f {
+            Some(Value::Float(f)) => Some(Value::Float(*f)),
+            Some(Value::FloatArray(arr)) if !arr.is_empty() => Some(Value::Float(arr[0])),
+            Some(Value::FloatMatrix(m)) if m.nrows() > 0 => {
+                Some(Value::FloatArray(m.row(0).to_owned()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the optimal solution is feasible (`cv <= 0`).
+    ///
+    /// Mirrors `Result.feas` property: `return self.cv <= 0`.
+    pub fn feas(&self) -> bool {
+        self.cv().map_or(false, |cv| cv <= 0.0)
+    }
+}

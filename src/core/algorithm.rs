@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    time::{Instant, SystemTime},
-};
+use std::{collections::HashMap, time::Instant};
 
 use anyhow::{Result, anyhow};
 use rand::{SeedableRng, rngs::StdRng};
@@ -13,6 +10,7 @@ use crate::{
         individual::{IndividualField, Value},
         population::Population,
         problem::Problem,
+        result::AlgorithmResult,
         termination::Termination,
     },
     util::display::{display::Display, output::Output},
@@ -107,11 +105,7 @@ pub trait Algorithm {
             let n_obj = self.base().problem.as_ref().map_or(0, |p| p.n_obj());
             self.base_mut().termination = Some(default_termination(n_obj));
         } else {
-            let term = self
-                .base_mut()
-                .termination
-                .take()
-                .map(termination_from_tuple);
+            let term = self.base_mut().termination.take();
             self.base_mut().termination = term;
         }
 
@@ -124,7 +118,7 @@ pub trait Algorithm {
     }
 
     /// Mirrors `Algorithm.run()`.
-    fn run(&mut self) -> Result<AlgorithmResult> {
+    fn run(&mut self) -> AlgorithmResult {
         while self.has_next() {
             self.next()?;
         }
@@ -261,7 +255,7 @@ pub trait Algorithm {
         let mut res = AlgorithmResult::new();
 
         res.start_time = self.base().start_time;
-        res.end_time = SystemTime::now();
+        res.end_time = Some(Instant::now());
         res.exec_time = res.end_time - res.start_time;
 
         res.pop = self.base().pop.clone();

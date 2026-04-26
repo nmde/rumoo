@@ -7,6 +7,7 @@ pub mod mutation;
 pub mod operator;
 pub mod population;
 pub mod problem;
+pub mod result;
 pub mod sampling;
 pub mod selection;
 pub mod survival;
