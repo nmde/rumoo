@@ -1,3 +1,4 @@
+/*
 from abc import abstractmethod
 
 import numpy as np
@@ -69,8 +70,10 @@ class Survival:
     @abstractmethod
     def _do(self, problem, pop, *args, n_survive=None, random_state=None, **kwargs):
         pass
+*/
+pub trait Survival {}
 
-
+/*
 class ToReplacement(Survival):
 
     def __init__(self, survival):
@@ -105,3 +108,4 @@ def split_by_feasibility(pop, sort_infeas_by_cv=True, sort_feas_by_obj=False, re
         return feasible, infeasible
     else:
         return feasible, infeasible, pop[feasible], pop[infeasible]
+*/

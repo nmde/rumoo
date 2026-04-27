@@ -1,8 +1,13 @@
-import numpy as np
-import warnings
+use crate::{
+    algorithms::base::genetic::GeneticAlgorithm,
+    core::{
+        crossover::Crossover, duplicate::EliminateDuplicates, mutation::Mutation,
+        sampling::Sampling, selection::Selection, survival::Survival,
+    },
+    util::display::output::Output,
+};
 
-from pymoo.algorithms.base.genetic import GeneticAlgorithm
-from pymoo.docs import parse_doc_string
+/*
 from pymoo.operators.crossover.sbx import SBX
 from pymoo.operators.mutation.pm import PM
 from pymoo.operators.survival.rank_and_crowding import RankAndCrowding
@@ -68,46 +73,61 @@ def binary_tournament(pop, P, algorithm, **kwargs):
 
 
 class RankAndCrowdingSurvival(RankAndCrowding):
-    
+
     def __init__(self, nds=None, crowding_func="cd"):
         super().__init__(nds, crowding_func)
+*/
+// =========================================================================================================
+// Implementation
+// =========================================================================================================
 
-# =========================================================================================================
-# Implementation
-# =========================================================================================================
+enum TournamentType {
+    CompByDomAndCrowding,
+}
 
+struct NSGA2 {
+    algorithm: GeneticAlgorithm,
+    tournament_type: TournamentType,
+}
 
-class NSGA2(GeneticAlgorithm):
+impl NSGA2 {
+    pub fn new(
+        pop_size: Option<usize>,
+        sampling: Option<Box<dyn Sampling>>,
+        selection: Option<Box<dyn Selection>>,
+        crossover: Option<Box<dyn Crossover>>,
+        mutation: Option<Box<dyn Mutation>>,
+        survival: Option<Box<dyn Survival>>,
+        output: Option<Box<dyn Output>>,
+        advance_after_initial_infill: Option<bool>,
+    ) -> Self {
+        let algorithm = GeneticAlgorithm::new(
+            Some(pop_size.unwrap_or(100)),
+            Some(sampling.unwrap_or(FloatRandomSampling::new())),
+            Some(selection.unwrap_or(TournamentSelection::new(func_comp = binary_tournament))),
+            Some(crossover.unwrap_or(SBX::new(eta = 15, prob = 0.9))),
+            Some(mutation.unwrap_or(PM::new(eta = 20))),
+            Some(survival.unwrap_or(RankAndCrowding::new())),
+            None,
+            EliminateDuplicates::None,
+            None,
+            None,
+            Some(advance_after_initial_infill.unwrap_or(true)),
+            Some(output.unwrap_or(MultiObjectiveOutput::new())),
+        );
+        algorithm.termination = MultiObjectiveTermination::default();
 
-    def __init__(self,
-                 pop_size=100,
-                 sampling=FloatRandomSampling(),
-                 selection=TournamentSelection(func_comp=binary_tournament),
-                 crossover=SBX(eta=15, prob=0.9),
-                 mutation=PM(eta=20),
-                 survival=RankAndCrowding(),
-                 output=MultiObjectiveOutput(),
-                 **kwargs):
-        
-        super().__init__(
-            pop_size=pop_size,
-            sampling=sampling,
-            selection=selection,
-            crossover=crossover,
-            mutation=mutation,
-            survival=survival,
-            output=output,
-            advance_after_initial_infill=True,
-            **kwargs)
+        Self {
+            algorithm,
+            tournament_type: TournamentType::CompByDomAndCrowding,
+        }
+    }
 
-        self.termination = DefaultMultiObjectiveTermination()
-        self.tournament_type = 'comp_by_dom_and_crowding'
-
-    def _set_optimum(self, **kwargs):
-        if not has_feasible(self.pop):
-            self.opt = self.pop[[np.argmin(self.pop.get("CV"))]]
-        else:
-            self.opt = self.pop[self.pop.get("rank") == 0]
-
-
-parse_doc_string(NSGA2.__init__)
+    fn _set_optimum(&self) {
+        if !has_feasible(self.pop) {
+            self.opt = self.pop[[np.argmin(self.pop.get("CV"))]];
+        } else {
+            self.opt = self.pop[self.pop.get("rank") == 0];
+        }
+    }
+}

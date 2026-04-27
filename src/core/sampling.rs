@@ -1,3 +1,4 @@
+/*
 from abc import abstractmethod
 
 from pymoo.core.operator import Operator
@@ -40,6 +41,5 @@ class Sampling(Operator):
     @abstractmethod
     def _do(self, problem, n_samples, *args, random_state=None, **kwargs):
         pass
-
-
-
+*/
+pub trait Sampling {}

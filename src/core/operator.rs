@@ -1,3 +1,4 @@
+/*
 import abc
 
 import numpy as np
@@ -44,3 +45,5 @@ class Operator:
             out = np.array([ind.X for ind in out])
 
         return out
+*/
+pub trait Operator {}

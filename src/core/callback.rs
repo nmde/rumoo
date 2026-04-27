@@ -1,11 +1,19 @@
-class Callback:
+use std::collections::HashMap;
 
-    def __init__(self) -> None:
-        super().__init__()
-        self.data = {}
-        self.is_initialized = False
+struct CallbackBase {
+    data: HashMap<String, f64>,
+    is_initialized: bool,
+}
 
-    def initialize(self, algorithm):
+impl CallbackBase {
+    pub fn new() -> Self {
+        Self {
+            data: HashMap::new(),
+            is_initialized: false,
+        }
+    }
+/*
+def initialize(self, algorithm):
         pass
 
     def notify(self, algorithm):
@@ -25,8 +33,32 @@ class Callback:
 
         self.notify(algorithm)
         self.update(algorithm)
+*/
+}
 
+pub trait Callback {
+    fn base(&self) -> &CallbackBase;
+}
 
+pub struct DefaultCallback {
+    base: CallbackBase,
+}
+
+impl DefaultCallback {
+    pub fn new() -> Self {
+        Self {
+            base: CallbackBase::new(),
+        }
+    }
+}
+
+impl Callback for DefaultCallback {
+    fn base(&self) -> &CallbackBase {
+        &self.base
+    }
+}
+
+/*
 class CallbackCollection(Callback):
 
     def __init__(self, *args) -> None:
@@ -35,4 +67,4 @@ class CallbackCollection(Callback):
 
     def update(self, algorithm):
         [callback.update(algorithm) for callback in self.callbacks]
-
+*/

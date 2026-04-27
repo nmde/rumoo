@@ -1,6 +1,4 @@
-from abc import abstractmethod
-
-
+/*
 class Termination:
 
     def __init__(self) -> None:
@@ -43,8 +41,11 @@ class Termination:
     @abstractmethod
     def _update(self, algorithm):
         pass
+*/
 
+pub trait Termination {}
 
+/*
 class NoTermination(Termination):
 
     def _update(self, algorithm):
@@ -68,3 +69,4 @@ class TerminateIfAll(MultipleCriteria):
 
     def _update(self, algorithm):
         return min([termination.update(algorithm) for termination in self.criteria])
+*/

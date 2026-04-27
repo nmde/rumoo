@@ -1,3 +1,4 @@
+/*
 from pymoo.core.callback import Callback
 from pymoo.util.display.column import Column
 
@@ -51,3 +52,6 @@ class Output(Callback):
     def text(self):
         regex = " | ".join(["{}"] * len(self.columns))
         return regex.format(*[col.text() for col in self.columns])
+*/
+
+pub trait Output {}

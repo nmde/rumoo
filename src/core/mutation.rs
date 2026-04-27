@@ -1,10 +1,15 @@
-from copy import deepcopy
-
-from pymoo.core.operator import Operator
+/*
 from pymoo.core.variable import Real, get
 from pymoo.util import default_random_state
+*/
 
+use crate::core::operator::Operator;
 
+struct MutationBase {}
+
+impl Operator for MutationBase {}
+
+/*
 class Mutation(Operator):
 
     def __init__(self, prob=1.0, prob_var=None, **kwargs) -> None:
@@ -42,3 +47,5 @@ class Mutation(Operator):
     def get_prob_var(self, problem, **kwargs):
         prob_var = self.prob_var if self.prob_var is not None else min(0.5, 1 / problem.n_var)
         return get(prob_var, **kwargs)
+*/
+pub trait Mutation {}

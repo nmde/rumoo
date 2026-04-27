@@ -1,65 +1,90 @@
-from pymoo.core.duplicate import NoDuplicateElimination
+/*
 from pymoo.core.population import Population
-from pymoo.core.repair import NoRepair
+*/
 
+use crate::core::{
+    duplicate::{
+        DefaultDuplicateElimination, DuplicateElimination, EliminateDuplicates,
+        NoDuplicateElimination,
+    },
+    repair::{NoRepair, Repair},
+};
 
-class InfillCriterion:
+pub struct InfillCriterion {
+    n_max_iterations: usize,
+    eliminate_duplicates: Box<dyn DuplicateElimination>,
+    repair: Box<dyn Repair>,
+}
 
-    def __init__(self,
-                 repair=None,
-                 eliminate_duplicates=None,
-                 n_max_iterations=100,
-                 **kwargs):
+impl InfillCriterion {
+    pub fn new(
+        repair: Option<&dyn Repair>,
+        eliminate_duplicates: EliminateDuplicates,
+        n_max_iterations: Option<usize>,
+    ) -> Self {
+        Self {
+            n_max_iterations: n_max_iterations.unwrap_or(100),
+            eliminate_duplicates: match eliminate_duplicates {
+                EliminateDuplicates::None => Box::new(DefaultDuplicateElimination::default()),
+                EliminateDuplicates::Bool(v) => {
+                    if v {
+                        Box::new(DefaultDuplicateElimination::default())
+                    } else {
+                        Box::new(NoDuplicateElimination::new())
+                    }
+                }
+                EliminateDuplicates::Eliminator(v) => v,
+            },
+            repair: repair.unwrap_or(Box::new(NoRepair::new())),
+        }
+    }
+    /*
+        def __call__(self, problem, pop, n_offsprings, random_state=None, **kwargs):
+            return self.do(problem, pop, n_offsprings, random_state=random_state, **kwargs)
 
-        super().__init__()
-        self.n_max_iterations = n_max_iterations
-        self.eliminate_duplicates = eliminate_duplicates if eliminate_duplicates is not None else NoDuplicateElimination()
-        self.repair = repair if repair is not None else NoRepair()
+        def do(self, problem, pop, n_offsprings, random_state=None, n_max_iterations=None, **kwargs):
+            if n_max_iterations is None:
+                n_max_iterations = self.n_max_iterations
 
-    def __call__(self, problem, pop, n_offsprings, random_state=None, **kwargs):
-        return self.do(problem, pop, n_offsprings, random_state=random_state, **kwargs)
+            # the population object to be used
+            off = Population.create()
 
-    def do(self, problem, pop, n_offsprings, random_state=None, n_max_iterations=None, **kwargs):
-        if n_max_iterations is None:
-            n_max_iterations = self.n_max_iterations
+            # infill counter - counts how often the mating needs to be done to fill up n_offsprings
+            n_infills = 0
 
-        # the population object to be used
-        off = Population.create()
+            # iterate until enough offsprings are created
+            while len(off) < n_offsprings:
 
-        # infill counter - counts how often the mating needs to be done to fill up n_offsprings
-        n_infills = 0
-
-        # iterate until enough offsprings are created
-        while len(off) < n_offsprings:
-
-            # how many offsprings are remaining to be created
-            n_remaining = n_offsprings - len(off)
-
-            # do the mating
-            _off = self._do(problem, pop, n_remaining, random_state=random_state, **kwargs)
-
-            # repair the individuals if necessary - disabled if repair is NoRepair
-            _off = self.repair(problem, _off, random_state=random_state, **kwargs)
-
-            # eliminate the duplicates
-            _off = self.eliminate_duplicates.do(_off, pop, off)
-
-            # if more offsprings than necessary - truncate them randomly
-            if len(off) + len(_off) > n_offsprings:
-
-                # IMPORTANT: Interestingly, this makes a difference in performance for some algorithms
+                # how many offsprings are remaining to be created
                 n_remaining = n_offsprings - len(off)
-                _off = _off[:n_remaining]
 
-            # add to the offsprings and increase the mating counter
-            off = Population.merge(off, _off)
-            n_infills += 1
+                # do the mating
+                _off = self._do(problem, pop, n_remaining, random_state=random_state, **kwargs)
 
-            # if no new offsprings can be generated within a pre-specified number of generations
-            if n_infills >= n_max_iterations:
-                break
+                # repair the individuals if necessary - disabled if repair is NoRepair
+                _off = self.repair(problem, _off, random_state=random_state, **kwargs)
 
-        return off
+                # eliminate the duplicates
+                _off = self.eliminate_duplicates.do(_off, pop, off)
 
-    def _do(self, problem, pop, n_offsprings, random_state=None, **kwargs):
-        pass
+                # if more offsprings than necessary - truncate them randomly
+                if len(off) + len(_off) > n_offsprings:
+
+                    # IMPORTANT: Interestingly, this makes a difference in performance for some algorithms
+                    n_remaining = n_offsprings - len(off)
+                    _off = _off[:n_remaining]
+
+                # add to the offsprings and increase the mating counter
+                off = Population.merge(off, _off)
+                n_infills += 1
+
+                # if no new offsprings can be generated within a pre-specified number of generations
+                if n_infills >= n_max_iterations:
+                    break
+
+            return off
+
+        def _do(self, problem, pop, n_offsprings, random_state=None, **kwargs):
+            pass
+    */
+}

@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
+ndarray = "0.17.2"
+rand = "0.10.1"

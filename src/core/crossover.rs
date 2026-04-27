@@ -1,3 +1,4 @@
+/*
 import numpy as np
 
 from pymoo.core.operator import Operator
@@ -75,5 +76,5 @@ class Crossover(Operator):
 
     def _do(self, problem, X, *args, random_state=None, **kwargs):
         pass
-
-
+*/
+pub trait Crossover {}

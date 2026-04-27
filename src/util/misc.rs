@@ -1,3 +1,11 @@
+use std::f64::INFINITY;
+
+use anyhow::Result;
+use ndarray::{Array1, Array2, Axis};
+
+use crate::core::population::Population;
+
+/*
 from collections import OrderedDict
 from itertools import combinations
 
@@ -84,16 +92,17 @@ def get_duplicates(M):
         i += 1
 
     return res
+*/
 
+// -----------------------------------------------
+// Euclidean Distance
+// -----------------------------------------------
 
-# -----------------------------------------------
-# Euclidean Distance
-# -----------------------------------------------
+fn func_euclidean_distance(a: &Array2<f64>, b: &Array2<f64>) -> Array1<f64> {
+    (a - b).mapv(|v| v * v).sum_axis(Axis(1)).mapv(f64::sqrt)
+}
 
-def func_euclidean_distance(a, b):
-    return np.sqrt(((a - b) ** 2).sum(axis=1))
-
-
+/*
 def func_norm_euclidean_distance(xl, xu):
     return lambda a, b: np.sqrt((((a - b) / (xu - xl)) ** 2).sum(axis=1))
 
@@ -145,43 +154,55 @@ def norm_tchebychev_dist_by_bounds(A, B, xl, xu, **kwargs):
 
 def norm_tchebychev_dist(problem, A, B, **kwargs):
     return norm_tchebychev_dist_by_bounds(A, B, *problem.bounds(), **kwargs)
+*/
 
+// -----------------------------------------------
+// Others
+// -----------------------------------------------
 
-# -----------------------------------------------
-# Others
-# -----------------------------------------------
+pub fn cdist(a: &Array2<f64>, b: &Array2<f64>) -> Result<Array2<f64>> {
+    vectorized_cdist(a, b, None, Some(false))
+}
 
+fn vectorized_cdist(
+    a: &Array2<f64>,
+    b: &Array2<f64>,
+    func_dist: Option<&dyn Fn(&Array2<f64>, &Array2<f64>) -> Result<Array1<f64>>>,
+    fill_diag_with_inf: Option<bool>,
+) -> Result<Array2<f64>> {
+    let na = a.nrows();
+    let nb = b.nrows();
 
-def cdist(A, B, **kwargs):
-    from scipy.spatial import distance
-    return distance.cdist(A.astype(float), B.astype(float), **kwargs)
+    let mut u = Array2::zeros((na * nb, a.ncols()));
+    for (i, row) in a.outer_iter().enumerate() {
+        for j in 0..b.nrows() {
+            u.row_mut(i * nb + j).assign(&row);
+        }
+    }
 
+    let mut v = Array2::zeros((na * nb, a.ncols()));
+    for i in 0..na {
+        for (j, row) in b.outer_iter().enumerate() {
+            v.row_mut(i * nb + j).assign(&row);
+        }
+    }
 
-def vectorized_cdist(A, B, func_dist=func_euclidean_distance, fill_diag_with_inf=False, **kwargs) -> object:
-    assert A.ndim <= 2 and B.ndim <= 2
+    let tmp = match func_dist {
+        None => func_euclidean_distance(&u, &v),
+        Some(f) => f(&u, &v)?,
+    };
+    let mut m = tmp.to_shape((na, nb))?;
 
-    A, only_row = at_least_2d_array(A, extend_as="row", return_if_reshaped=True)
-    B, only_column = at_least_2d_array(B, extend_as="row", return_if_reshaped=True)
+    if fill_diag_with_inf.unwrap_or(false) {
+        for i in 0..na.min(nb) {
+            m[[i, i]] = INFINITY;
+        }
+    }
 
-    u = np.repeat(A, B.shape[0], axis=0)
-    v = np.tile(B, (A.shape[0], 1))
+    Ok(m.to_owned())
+}
 
-    D = func_dist(u, v, **kwargs)
-    M = np.reshape(D, (A.shape[0], B.shape[0]))
-
-    if fill_diag_with_inf:
-        np.fill_diagonal(M, np.inf)
-
-    if only_row and only_column:
-        M = M[0, 0]
-    elif only_row:
-        M = M[0]
-    elif only_column:
-        M = M[:, [0]]
-
-    return M
-
-
+/*
 def covert_to_type(problem, X):
     if problem.vtype == float:
         return X.astype(np.double)
@@ -209,32 +230,26 @@ def at_least_2d(*args, **kwargs):
     if len(ret) == 1:
         ret = ret[0]
     return ret
+*/
 
+#[derive(PartialEq)]
+enum ExtendAs {
+    Row,
+    Column,
+}
 
-def at_least_2d_array(x, extend_as="row", return_if_reshaped=False):
-    if x is None:
-        return x
-    elif not isinstance(x, np.ndarray):
-        x = np.array([x])
+fn at_least_2d_array(x: Array1<f64>, extend_as: Option<ExtendAs>) -> Result<Array2<f64>> {
+    let extend_as = extend_as.unwrap_or(ExtendAs::Row);
 
-    has_been_reshaped = False
+    Ok((if extend_as == ExtendAs::Row {
+        x.to_shape((1, x.len()))?
+    } else {
+        x.to_shape((x.len(), 1))?
+    })
+    .to_owned())
+}
 
-    if x.ndim == 1:
-        if extend_as.startswith("r"):
-            x = x[None, :]
-        elif extend_as.startswith("c"):
-            x = x[:, None]
-        else:
-            raise Exception("The option `extend_as` should be either `row` or `column`.")
-
-        has_been_reshaped = True
-
-    if return_if_reshaped:
-        return x, has_been_reshaped
-    else:
-        return x
-
-
+/*
 def to_1d_array_if_possible(x):
     if not isinstance(x, np.ndarray):
         x = np.array([x])
@@ -343,12 +358,13 @@ def intersect(a, b):
             ret.append(entry)
 
     return ret
+*/
 
+pub fn has_feasible(pop: &Population) -> bool {
+    pop.feas().iter().any(|f| *f)
+}
 
-def has_feasible(pop):
-    return np.any(pop.get("FEAS"))
-
-
+/*
 def to_numpy(a):
     return np.array(a)
 
@@ -445,3 +461,4 @@ def row_at_least_once_true(M, random_state=None):
     for k in np.where(~np.any(M, axis=1))[0]:
         M[k, random_state.integers(d)] = True
     return M
+    */

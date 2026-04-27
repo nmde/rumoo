@@ -1,84 +1,146 @@
-import numpy as np
+use std::{collections::HashSet, f64::INFINITY};
 
-from pymoo.util.misc import cdist
+use anyhow::Result;
+use ndarray::{Array1, Array2};
 
+use crate::{core::population::Population, util::misc::cdist};
 
-def default_attr(pop):
-    return pop.get("X")
+pub enum EliminateDuplicates {
+    None,
+    Bool(bool),
+    Eliminator(Box<dyn DuplicateElimination>),
+}
 
+struct DuplicateEliminationBase {
+    func: fn(&Population) -> Array2<f64>,
+}
 
-class DuplicateElimination:
+impl DuplicateEliminationBase {
+    pub fn new(func: Option<fn(&Population) -> Array2<f64>>) -> Self {
+        Self {
+            func: func.unwrap_or(|pop| pop.x()),
+        }
+    }
+}
 
-    def __init__(self, func=None) -> None:
-        super().__init__()
-        self.func = func
+pub trait DuplicateElimination {
+    fn base(&self) -> &DuplicateEliminationBase;
 
-        if self.func is None:
-            self.func = default_attr
+    fn do_elimination(
+        &self,
+        pop: &Population,
+        others: &Vec<Population>,
+        to_itself: Option<bool>,
+    ) -> Result<(Population, Vec<usize>, Vec<usize>)> {
+        let to_itself = to_itself.unwrap_or(true);
+        let original = pop;
 
-    def do(self, pop, *args, return_indices=False, to_itself=True):
-        original = pop
+        let mut surviving = (0..pop.len()).collect::<Vec<usize>>();
+        if to_itself {
+            let mut is_dup = Array1::from_elem(surviving.len(), false);
+            self._do(&pop.select(&surviving), None, &mut is_dup)?;
+            surviving = surviving
+                .into_iter()
+                .zip(is_dup.iter())
+                .filter_map(|(idx, dup)| if !dup { Some(idx) } else { None })
+                .collect();
+        }
 
-        if len(pop) == 0:
-            return (pop, [], []) if return_indices else pop
+        for other in others {
+            if surviving.is_empty() {
+                break;
+            }
+            if other.is_empty() {
+                continue;
+            }
+            let mut is_dup = Array1::from_elem(surviving.len(), false);
+            self._do(&pop.select(&surviving), Some(other), &mut is_dup)?;
+            surviving = surviving
+                .into_iter()
+                .zip(is_dup.iter())
+                .filter_map(|(idx, dup)| if !dup { Some(idx) } else { None })
+                .collect();
+        }
 
-        if to_itself:
-            pop = pop[~self._do(pop, None, np.full(len(pop), False))]
+        let h = surviving.clone().into_iter().collect::<HashSet<usize>>();
 
-        for arg in args:
-            if len(arg) > 0:
+        Ok((
+            pop.select(&surviving),
+            (0..original.len()).filter(|i| h.contains(i)).collect(),
+            (0..original.len()).filter(|i| !h.contains(i)).collect(),
+        ))
+    }
 
-                if len(pop) == 0:
-                    break
-                elif len(arg) == 0:
-                    continue
-                else:
-                    pop = pop[~self._do(pop, arg, np.full(len(pop), False))]
+    fn _do(
+        &self,
+        _pop: &Population,
+        _other: Option<&Population>,
+        _is_duplicate: &mut Array1<bool>,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
 
-        if return_indices:
-            no_duplicate, is_duplicate = [], []
-            H = set(pop)
+pub struct DefaultDuplicateElimination {
+    base: DuplicateEliminationBase,
+    epsilon: f64,
+}
 
-            for i, ind in enumerate(original):
-                if ind in H:
-                    no_duplicate.append(i)
-                else:
-                    is_duplicate.append(i)
+impl DefaultDuplicateElimination {
+    pub fn new(epsilon: Option<f64>, func: Option<fn(&Population) -> Array2<f64>>) -> Self {
+        Self {
+            base: DuplicateEliminationBase::new(func),
+            epsilon: epsilon.unwrap_or(1e-16),
+        }
+    }
 
-            return pop, no_duplicate, is_duplicate
-        else:
-            return pop
+    fn calc_dist(&self, pop: &Population, other: Option<&Population>) -> Result<Array2<f64>> {
+        let x = (self.base.func)(pop);
 
-    def _do(self, pop, other, is_duplicate):
-        return is_duplicate
+        if other.is_none() {
+            let mut d = cdist(&x, &x)?;
+            for i in 0..x.nrows() {
+                for j in i..x.nrows() {
+                    d[[i, j]] = INFINITY;
+                }
+            }
+            return Ok(d);
+        }
+        cdist(&x, &(self.base.func)(other.unwrap()))
+    }
+}
 
+impl DuplicateElimination for DefaultDuplicateElimination {
+    fn base(&self) -> &DuplicateEliminationBase {
+        &self.base
+    }
 
-class DefaultDuplicateElimination(DuplicateElimination):
+    fn _do(
+        &self,
+        pop: &Population,
+        other: Option<&Population>,
+        is_duplicate: &mut Array1<bool>,
+    ) -> Result<()> {
+        let mut d = self.calc_dist(pop, other)?;
+        d.mapv_inplace(|v| if v.is_nan() { INFINITY } else { v });
 
-    def __init__(self, epsilon=1e-16, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.epsilon = epsilon
+        for i in 0..d.nrows() {
+            if d.row(i).iter().any(|v| v <= &self.epsilon) {
+                is_duplicate[i] = true;
+            }
+        }
 
-    def calc_dist(self, pop, other=None):
-        X = self.func(pop)
+        Ok(())
+    }
+}
 
-        if other is None:
-            D = cdist(X, X)
-            D[np.triu_indices(len(X))] = np.inf
-        else:
-            _X = self.func(other)
-            D = cdist(X, _X)
+impl Default for DefaultDuplicateElimination {
+    fn default() -> Self {
+        Self::new(None, None)
+    }
+}
 
-        return D
-
-    def _do(self, pop, other, is_duplicate):
-        D = self.calc_dist(pop, other)
-        D[np.isnan(D)] = np.inf
-
-        is_duplicate[np.any(D <= self.epsilon, axis=1)] = True
-        return is_duplicate
-
-
+/*
 def to_float(val):
     if isinstance(val, bool) or isinstance(val, np.bool_):
         return 0.0 if val else 1.0
@@ -155,9 +217,31 @@ class HashDuplicateElimination(DuplicateElimination):
                 H.add(h)
 
         return is_duplicate
+*/
 
+pub struct NoDuplicateElimination {
+    base: DuplicateEliminationBase,
+}
 
-class NoDuplicateElimination(DuplicateElimination):
+impl NoDuplicateElimination {
+    pub fn new() -> Self {
+        Self {
+            base: DuplicateEliminationBase::new(None),
+        }
+    }
+}
 
-    def do(self, pop, *args, **kwargs):
-        return pop
+impl DuplicateElimination for NoDuplicateElimination {
+    fn base(&self) -> &DuplicateEliminationBase {
+        &self.base
+    }
+
+    fn do_elimination(
+        &self,
+        pop: &Population,
+        _others: &Vec<Population>,
+        _to_itself: Option<bool>,
+    ) -> Result<(Population, Vec<usize>, Vec<usize>)> {
+        Ok((pop.clone(), vec![], vec![]))
+    }
+}

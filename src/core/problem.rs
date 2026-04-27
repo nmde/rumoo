@@ -1,9 +1,4 @@
-from __future__ import annotations
-
-from abc import abstractmethod
-
-import numpy as np
-
+/*
 import pymoo.gradient.toolbox as anp
 from pymoo.util.cache import Cache
 from pymoo.util.misc import at_least_2d_array
@@ -352,8 +347,11 @@ class Problem:
             return state
         else:
             return self.__dict__
+*/
 
+pub trait Problem {}
 
+/*
 class ElementwiseProblem(Problem):
 
     def __init__(self, elementwise=True, **kwargs):
@@ -394,3 +392,4 @@ def __getattr__(name):
         from pymoo.parallelization import StarmapParallelization
         return StarmapParallelization
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+*/

@@ -1,3 +1,4 @@
+/*
 from pymoo.core.callback import Callback
 from pymoo.util.display.progress import ProgressBar
 
@@ -32,3 +33,5 @@ class Display(Callback):
 
         if self.progress:
             self.progress.close()
+*/
+pub trait Display {}

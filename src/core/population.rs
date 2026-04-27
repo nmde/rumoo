@@ -1,123 +1,173 @@
-import numpy as np
+use std::{iter::Enumerate, slice::Iter};
 
-from pymoo.core.individual import Individual
+use anyhow::{Result, anyhow};
+use ndarray::{Array1, Array2};
 
+use crate::core::individual::Individual;
 
-class Population(np.ndarray):
+enum IndividualOrMore {
+    Single(Individual),
+    Multiple(Vec<Individual>),
+}
 
-    def __new__(cls, individuals=[]):
-        if isinstance(individuals, Individual):
-            individuals = [individuals]
-        return np.array(individuals).view(cls)
+#[derive(Clone)]
+pub struct Population {
+    individuals: Vec<Individual>,
+}
 
-    def has(self, key):
-        return all([ind.has(key) for ind in self])
+impl Population {
+    pub fn new(individuals: Option<IndividualOrMore>) -> Self {
+        Self {
+            individuals: if individuals.is_some() {
+                match individuals.unwrap() {
+                    IndividualOrMore::Single(i) => vec![i],
+                    IndividualOrMore::Multiple(i) => i,
+                }
+            } else {
+                vec![]
+            },
+        }
+    }
+    /*
+            def has(self, key):
+                return all([ind.has(key) for ind in self])
 
-    def collect(self, func, to_numpy=True):
-        val = []
-        for i in range(len(self)):
-            val.append(func(self[i]))
-        if to_numpy:
-            val = np.array(val)
-        return val
+            def collect(self, func, to_numpy=True):
+                val = []
+                for i in range(len(self)):
+                    val.append(func(self[i]))
+                if to_numpy:
+                    val = np.array(val)
+                return val
 
-    def apply(self, func):
-        self.collect(func, to_numpy=False)
+            def apply(self, func):
+                self.collect(func, to_numpy=False)
 
-    def set(self, *args, **kwargs):
+            pub fn get(&self, *args, to_numpy=True, **kwargs):
 
-        # if population is empty just return
-        if self.size == 0:
-            return
+                val = {}
+                for c in args:
+                    val[c] = []
 
-        # done for the old interface with the interleaving variable definition
-        kwargs = interleaving_args(*args, kwargs=kwargs)
+                # for each individual
+                for i in range(len(self)):
 
-        # for each entry in the dictionary set it to each individual
-        for key, values in kwargs.items():
-            is_iterable = hasattr(values, '__len__') and not isinstance(values, str)
+                    # for each argument
+                    for c in args:
+                        val[c].append(self[i].get(c, **kwargs))
 
-            if is_iterable and len(values) != len(self):
-                raise Exception("Population Set Attribute Error: Number of values and population size do not match!")
+                # convert the results to a list
+                res = [val[c] for c in args]
 
-            for i in range(len(self)):
-                val = values[i] if is_iterable else values
+                # to numpy array if desired - default true
+                if to_numpy:
+                    res = [np.array(e) for e in res]
 
-                # check for view and make copy to prevent memory leakage (#455)
-                if isinstance(val, np.ndarray) and not val.flags["OWNDATA"]:
-                    val = val.copy()
+                # return as tuple or single value
+                if len(args) == 1:
+                    return res[0]
+                else:
+                    return tuple(res)
+    */
 
-                self[i].set(key, val)
+    pub fn x(&self) -> Array2<f64> {
+        let mut out = Array2::zeros((self.individuals.len(), self.individuals[0].x.iter().len()));
+        for (i, ind) in self.individuals.iter().enumerate() {
+            out.row_mut(i).assign(&ind.x);
+        }
+        out
+    }
 
-        return self
+    pub fn set_x(&mut self, value: Array1<f64>) {
+        for ind in &mut self.individuals {
+            ind.x = value.clone();
+        }
+    }
 
-    def get(self, *args, to_numpy=True, **kwargs):
+    pub fn set_each_x(&mut self, values: &Vec<Array1<f64>>) -> Result<&Self> {
+        if values.len() != self.len() {
+            return Err(anyhow!(
+                "Population Set Attribute Error: Number of values and population size do not match!"
+            ));
+        }
 
-        val = {}
-        for c in args:
-            val[c] = []
+        for (ind, val) in self.individuals.iter_mut().zip(values) {
+            ind.x = val.clone();
+        }
 
-        # for each individual
-        for i in range(len(self)):
+        Ok(self)
+    }
 
-            # for each argument
-            for c in args:
-                val[c].append(self[i].get(c, **kwargs))
+    pub fn feas(&self) -> Array1<bool> {
+        Array1::from_vec(self.individuals.iter().map(|ind| ind.feas()[0]).collect())
+    }
 
-        # convert the results to a list
-        res = [val[c] for c in args]
+    /*
+        @classmethod
+        def merge(cls, a, b, *args):
 
-        # to numpy array if desired - default true
-        if to_numpy:
-            res = [np.array(e) for e in res]
+            # do the regular merge between first and second element
+            m = merge(a, b)
 
-        # return as tuple or single value
-        if len(args) == 1:
-            return res[0]
-        else:
-            return tuple(res)
+            # process the list of others and merge as well
+            others = list(args)
+            while len(others) > 0:
+                m = merge(m, others.pop(0))
 
-    @classmethod
-    def merge(cls, a, b, *args):
+            return m
 
-        # do the regular merge between first and second element
-        m = merge(a, b)
+        @classmethod
+        def create(cls, *args):
+            return Population.__new__(cls, args)
 
-        # process the list of others and merge as well
-        others = list(args)
-        while len(others) > 0:
-            m = merge(m, others.pop(0))
+        @classmethod
+        def empty(cls, size=0):
+            individuals = [Individual() for _ in range(size)]
+            return Population.__new__(cls, individuals)
 
-        return m
+        @classmethod
+        def new(cls, *args, **kwargs):
+            kwargs = interleaving_args(*args, kwargs=kwargs)
 
-    @classmethod
-    def create(cls, *args):
-        return Population.__new__(cls, args)
-
-    @classmethod
-    def empty(cls, size=0):
-        individuals = [Individual() for _ in range(size)]
-        return Population.__new__(cls, individuals)
-
-    @classmethod
-    def new(cls, *args, **kwargs):
-        kwargs = interleaving_args(*args, kwargs=kwargs)
-
-        if len(kwargs) > 0:
-            sizes = np.unique(np.array([len(v) for _, v in kwargs.items()]))
-            if len(sizes) == 1:
-                size = sizes[0]
+            if len(kwargs) > 0:
+                sizes = np.unique(np.array([len(v) for _, v in kwargs.items()]))
+                if len(sizes) == 1:
+                    size = sizes[0]
+                else:
+                    raise Exception(f"Population.new needs to be called with same-sized inputs, but the sizes are {sizes}")
             else:
-                raise Exception(f"Population.new needs to be called with same-sized inputs, but the sizes are {sizes}")
-        else:
-            size = 0
+                size = 0
 
-        pop = Population.empty(size)
-        pop.set(**kwargs)
+            pop = Population.empty(size)
+            pop.set(**kwargs)
 
-        return pop
+            return pop
+    */
 
+    // Mirrors for array functionality
+    pub fn is_empty(&self) -> bool {
+        self.individuals.is_empty()
+    }
 
+    pub fn len(&self) -> usize {
+        self.individuals.len()
+    }
+
+    pub fn select(&self, indices: &[usize]) -> Self {
+        Self::new(Some(IndividualOrMore::Multiple(
+            indices
+                .iter()
+                .map(|i| self.individuals[*i].clone())
+                .collect(),
+        )))
+    }
+
+    pub fn enumerate(&self) -> Enumerate<Iter<'_, Individual>> {
+        self.individuals.iter().enumerate()
+    }
+}
+
+/*
 def pop_from_array_or_individual(array, pop=None):
     # the population type can be different - (different type of individuals)
     if pop is None:
@@ -176,5 +226,6 @@ def calc_cv(pop, config=None):
 
     from pymoo.core.individual import calc_cv as func
     CV = np.array([func(g, h, config) for g, h in zip(G, H)])
-    
+
     return CV
+*/

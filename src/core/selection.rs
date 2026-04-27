@@ -1,11 +1,19 @@
+/*
 from abc import abstractmethod
 
 import numpy as np
 
 from pymoo.core.operator import Operator
 from pymoo.util import default_random_state
+*/
 
+use crate::core::operator::Operator;
 
+struct SelectionBase {}
+
+impl Operator for SelectionBase {}
+
+/*
 class Selection(Operator):
 
     def __init__(self, **kwargs) -> None:
@@ -59,3 +67,7 @@ class Selection(Operator):
     @abstractmethod
     def _do(self, problem, pop, n_select, n_parents, *args, random_state=None, **kwargs):
         pass
+*/
+pub trait Selection {
+    fn base(&self) -> SelectionBase;
+}
