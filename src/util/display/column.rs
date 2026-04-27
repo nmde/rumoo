@@ -120,7 +120,7 @@ pub fn format_text(value: Option<Value>, width: usize, truncate: bool) -> String
         Some(Value::Float(f)) => number_to_text(f, width),
         Some(Value::Int(i)) => i.to_string(),
         Some(Value::Str(s)) => s,
-        None => "-".to_string(),
+        _ => "-".to_string(),
     };
 
     // mirrors: if truncate and len(text) > width: text = text[:width]

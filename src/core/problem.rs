@@ -314,7 +314,7 @@ pub trait Problem {
         for (name, v_opt) in &out {
             if let Some(v) = v_opt {
                 if let Some(shape) = shapes.get(name.as_str()) {
-                    let reshaped = v.clone().into_shape(shape.as_slice()).map_err(|_| {
+                    let reshaped = v.clone().to_shape(shape.as_slice()).map_err(|_| {
                         anyhow!(
                             "Problem Error: {} can not be set, expected shape {:?} but provided {:?}",
                             name,

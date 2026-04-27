@@ -8,6 +8,7 @@ use ndarray::{Array1, Array2};
 
 #[derive(Clone, Debug)]
 pub enum Value {
+    Str(String),
     Float(f64),
     Int(i64),
     Bool(bool),
