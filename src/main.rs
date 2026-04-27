@@ -1,6 +1,3 @@
-pub mod config;
-pub mod version;
-
 pub fn main() {
-
+    println!("Hello, World!");
 }
